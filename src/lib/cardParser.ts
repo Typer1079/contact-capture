@@ -1,3 +1,5 @@
+import { zipMatchesState } from './verify'
+
 /**
  * Turns the text recognized on a business card into contact fields.
  *
@@ -90,6 +92,32 @@ const STATES =
 // ZIP: 5 digits (+4). OCR sometimes misreads a digit as S/O/I/l or drops one, so a 4–6
 // character ZIP is still accepted (and later marked "Check" by the accuracy checks).
 const CITY_STATE_ZIP = new RegExp(`^(.*?)[,\\s]+(${STATES})\\.?\\s+([\\dSOIl]{4,6})(?:[-\\s]?(\\d{4}))?\\b`, 'i')
+// Same shape, but any two letters as the state (for OCR misreads like "NN" for "MN").
+const CITY_ANY_STATE_ZIP = /^(.*?[A-Za-z].*?)[,\s]+([A-Za-z]{2})\.?\s+([\dSOIl]{4,6})(?:[-\s]?(\d{4}))?\s*$/
+const STATE_SET = new Set(STATES.split('|'))
+// Letters OCR commonly confuses in capitals.
+const LOOKALIKE: Record<string, string> = {
+  N: 'MHW', M: 'NHW', H: 'NM', W: 'VMN', V: 'WUY', U: 'VO', O: 'DQCU', D: 'O', Q: 'O', C: 'GO', G: 'C',
+  I: 'LTJ', L: 'I', T: 'I', J: 'I', E: 'F', F: 'E', K: 'X', X: 'K', Y: 'V', A: 'R', R: 'A', P: 'R', S: 'O',
+}
+
+/**
+ * Repairs a misread state code: tries swapping each letter for its look-alikes and keeps a
+ * real state, preferring one that matches the ZIP code's area. Returns '' if nothing fits.
+ */
+export function repairState(raw: string, zip: string): string {
+  const s = raw.toUpperCase()
+  if (STATE_SET.has(s)) return s
+  const candidates = new Set<string>()
+  for (let i = 0; i < 2; i++) for (const c of LOOKALIKE[s[i]] ?? '') candidates.add(i === 0 ? c + s[1] : s[0] + c)
+  for (const a of LOOKALIKE[s[0]] ?? '') for (const b of LOOKALIKE[s[1]] ?? '') candidates.add(a + b)
+  const valid = [...candidates].filter((c) => STATE_SET.has(c))
+  // The first 3 ZIP digits identify the area, so even a ZIP with a digit missing helps choose.
+  const digits = zip.replace(/\D/g, '')
+  const area = digits.length >= 3 ? digits.slice(0, 3).padEnd(5, '0') : ''
+  return valid.find((c) => area && zipMatchesState(area, c) === true) ?? (valid.length === 1 ? valid[0] : '')
+}
+
 const fixZipDigits = (z: string) => z.replace(/[Ss]/g, '5').replace(/[Oo]/g, '0').replace(/[Il]/g, '1')
 const STREET =
   /^\s*\d{1,6}[A-Z]?\s+([NSEW]\.?\s+)?[\w.' -]+?\b(st|street|ave|avenue|blvd|boulevard|rd|road|dr|drive|ln|lane|way|pkwy|parkway|hwy|highway|fwy|freeway|ct|court|cir|circle|pl|place|ter|terrace|trl|trail|loop|sq|square|plaza|center|ctr)\b\.?(.*)$/i
@@ -355,8 +383,17 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
     // Try the shortest tail first so "123 Main St, Houston, TX 77002" gives city = "Houston".
     for (let k = parts.length - 1; k >= 0; k--) {
       const tail = parts.slice(k).join(', ')
-      const m = tail.match(CITY_STATE_ZIP)
-      if (!m) continue
+      let m = tail.match(CITY_STATE_ZIP)
+      if (!m) {
+        // State misread ("NN" for "MN")? Accept when the state can be repaired, or when the line
+        // clearly is an address (a house number before it).
+        const loose = tail.match(CITY_ANY_STATE_ZIP)
+        if (!loose) continue
+        const fixed = repairState(loose[2], fixZipDigits(loose[3]))
+        const hasStreet = parts.slice(0, k).some((h) => /^\s*\d{1,6}\s+[A-Za-z]/.test(h)) || (i > 0 && STREET.test(lines[i - 1].text))
+        if (!fixed && !hasStreet) continue
+        m = [loose[0], loose[1], fixed || loose[2].toUpperCase(), loose[3], loose[4]] as unknown as RegExpMatchArray
+      }
       let cityPart = m[1].trim()
       // "Suite 325 Maple Grove" (no comma after the suite number): the suite isn't part of the city.
       const suiteFirst = cityPart.match(SUITE_THEN_CITY)

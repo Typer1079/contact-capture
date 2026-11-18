@@ -51,6 +51,7 @@ export function suspiciousFields(c: Checkable): string[] {
   const out = new Set<string>()
   if (c.email && !EMAIL.test(c.email)) out.add('email')
   if (c.phone && !plausiblePhone(c.phone)) out.add('phone')
+  if (c.region && /^[A-Za-z]{2}$/.test(c.region) && !ZIP3[c.region.toUpperCase()] && !/^(PR|GU|VI|AS|MP)$/i.test(c.region)) out.add('region')
   if (c.postal_code && c.region) {
     const ok = zipMatchesState(c.postal_code, c.region)
     if (ok === false) {
