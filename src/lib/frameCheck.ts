@@ -164,14 +164,18 @@ export const LIMITS = {
   /** A frame must be at least this fraction as sharp as the sharpest recent frame. */
   relativeSharpness: 0.75,
   /** How many good frames in a row before capturing. */
-  goodFramesNeeded: 3,
+  goodFramesNeeded: 2,
 }
 
-/** Picks the single most useful instruction for the person holding the phone. */
-export function hintFor(r: FrameReport, recentMaxSharpness: number): Hint {
+/**
+ * Picks the single most useful instruction for the person holding the phone.
+ * With `requireAlignment: false` the card doesn't have to line up with the guide exactly:
+ * the text reader decides whether the picture is good enough (see CardScanner).
+ */
+export function hintFor(r: FrameReport, recentMaxSharpness: number, requireAlignment = true): Hint {
   if (r.brightness < LIMITS.minBrightness) return 'dark'
   if (r.brightness > LIMITS.maxBrightness) return 'bright'
-  if (!r.aligned) return 'closer'
+  if (requireAlignment && !r.aligned) return 'closer'
   if (r.motion === null || r.motion > LIMITS.maxMotion) return 'steady'
   if (r.sharpness < LIMITS.minSharpness || r.sharpness < recentMaxSharpness * LIMITS.relativeSharpness) return 'focus'
   return 'ok'

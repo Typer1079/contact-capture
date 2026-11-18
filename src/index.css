@@ -1,5 +1,14 @@
 @import "tailwindcss";
 
+@theme {
+  --animate-tilt: tilt 2.4s ease-in-out infinite;
+  @keyframes tilt {
+    0%, 25% { transform: rotate(0deg); }
+    50%, 75% { transform: rotate(90deg); }
+    100% { transform: rotate(0deg); }
+  }
+}
+
 @utility btn {
   @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50;
 }

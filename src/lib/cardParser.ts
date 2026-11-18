@@ -84,7 +84,10 @@ const KEEP_CAPS = new Set(['LLC', 'LLP', 'PLLC', 'LP', 'USA', 'CPA', 'CEO', 'CFO
 const STATES =
   'AL|AK|AZ|AR|CA|CO|CT|DE|DC|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY'
 
-const CITY_STATE_ZIP = new RegExp(`^(.*?)[,\\s]+(${STATES})\\.?\\s+(\\d{5})(?:[-\\s]?(\\d{4}))?\\b`, 'i')
+// ZIP: 5 digits (+4). OCR sometimes misreads a digit as S/O/I/l or drops one, so a 4–6
+// character ZIP is still accepted (and later marked "Check" by the accuracy checks).
+const CITY_STATE_ZIP = new RegExp(`^(.*?)[,\\s]+(${STATES})\\.?\\s+([\\dSOIl]{4,6})(?:[-\\s]?(\\d{4}))?\\b`, 'i')
+const fixZipDigits = (z: string) => z.replace(/[Ss]/g, '5').replace(/[Oo]/g, '0').replace(/[Il]/g, '1')
 const STREET =
   /^\s*\d{1,6}[A-Z]?\s+([NSEW]\.?\s+)?[\w.' -]+?\b(st|street|ave|avenue|blvd|boulevard|rd|road|dr|drive|ln|lane|way|pkwy|parkway|hwy|highway|fwy|freeway|ct|court|cir|circle|pl|place|ter|terrace|trl|trail|loop|sq|square|plaza|center|ctr)\b\.?(.*)$/i
 const SUITE = /^\s*(suite|ste\.?|unit|apt\.?|#|floor|fl\.?|bldg\.?|building)\s*[\w-]+/i
@@ -213,6 +216,13 @@ const cap = (w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
  */
 function spellLikeDomain(text: string, domainCore: string): string {
   const letters = text.replace(/[^A-Za-z0-9]/g, '')
+  // Last letter or two cut off ("GUARDIAN RFI" vs "guardianrfid"): finish it from the domain.
+  const missing = domainCore.length - letters.length
+  if (missing >= 1 && missing <= 2 && letters.length >= 5 && domainCore.startsWith(letters.toLowerCase())) {
+    const tail = domainCore.slice(letters.length)
+    const upper = letters === letters.toUpperCase()
+    return text.trimEnd() + (upper ? tail.toUpperCase() : tail)
+  }
   if (letters.length !== domainCore.length) return text
   let diffs = 0
   for (let i = 0; i < letters.length; i++) if (letters[i].toLowerCase() !== domainCore[i]) diffs++
@@ -354,7 +364,8 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
       const head = headParts.join(', ')
       out.city = titleCaseIfShouting(cityPart)
       out.region = m[2].toUpperCase()
-      out.postal_code = m[4] && m[4] !== '0000' ? `${m[3]}-${m[4]}` : m[3]
+      const zip5 = fixZipDigits(m[3])
+      out.postal_code = m[4] && m[4] !== '0000' ? `${zip5}-${m[4]}` : zip5
       out.country = 'USA'
       used.add(i)
       if (head) out.street = titleCaseIfShouting(head)
@@ -514,6 +525,8 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
 
   // Street and suite go in separate fields.
   if (out.street) [out.street, out.suite] = splitSuite(out.street)
+  // A "Suite" whose number was lost ("…Rd N, Suite") is dropped rather than kept half-read.
+  out.street = out.street.replace(/,?\s*\b(suite|ste\.?|unit|apt\.?|#)\s*$/i, '').trim()
 
   // 7. Everything left goes to Notes so nothing is lost.
   // Skip tiny fragments (logo bits, OCR noise); keep anything with real content.

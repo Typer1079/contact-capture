@@ -22,7 +22,15 @@ type View =
   | { name: 'list' }
   | { name: 'scan' }
   | { name: 'card' }
-  | { name: 'form'; draft: ContactDraft; editing?: Contact; autoFilled?: string[] }
+  | { name: 'form'; draft: ContactDraft; editing?: Contact; autoFilled?: string[]; uncertain?: string[] }
+
+const ADDRESS_KEYS = ['street', 'suite', 'city', 'region', 'postal_code', 'country']
+
+/** Scanner field names -> form keys (address parts live inside the address block). */
+function formKeys(fields: string[], draft: ContactDraft): string[] {
+  const addrId = draft.addresses[0]?.id
+  return fields.map((f) => (ADDRESS_KEYS.includes(f) && addrId ? `addr:${addrId}:${f}` : f))
+}
 
 /** Scanned fields -> a draft with one labeled address; returns which fields to highlight. */
 function draftFromScan(
@@ -111,17 +119,17 @@ export default function App() {
     setView({ name: 'form', draft, autoFilled })
   }
 
-  function handleCard(result: CardContact, consent?: IdConsent) {
+  function handleCard(result: CardContact, consent: IdConsent | undefined, uncertain: string[]) {
     // is_id is only a flag; it isn't saved.
     const { is_id: isId, ...fields } = result
     if (isId && consent) {
       const f = consent.includeSensitive ? fields : { ...fields, dob: '', dl_number: '' }
       const { draft, autoFilled } = draftFromScan('license', { ...f, consent_at: consent.consentAt }, 'Home')
-      setView({ name: 'form', draft, autoFilled })
+      setView({ name: 'form', draft, autoFilled, uncertain: formKeys(uncertain, draft) })
       return
     }
     const { draft, autoFilled } = draftFromScan('card', { ...fields, dob: '', dl_number: '' }, 'Work')
-    setView({ name: 'form', draft, autoFilled })
+    setView({ name: 'form', draft, autoFilled, uncertain: formKeys(uncertain, draft) })
   }
 
   if (!isConfigured) {
@@ -222,6 +230,7 @@ export default function App() {
             key={view.editing?.id ?? 'new'}
             initial={view.draft}
             autoFilled={view.autoFilled}
+            uncertain={view.uncertain}
             isEdit={Boolean(view.editing)}
             defs={defs}
             onDefsChange={setDefs}

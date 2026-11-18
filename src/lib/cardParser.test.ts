@@ -70,6 +70,18 @@ describe('parseBusinessCard', () => {
     expect(r.notes).not.toContain('HIRE DATE')
   })
 
+  it('keeps an address whose ZIP was misread (so it can be marked "Check")', () => {
+    const r = parseBusinessCard(L(['Pat Kim', 30], 'pat@kimco.com', 'GUARDIAN RFIL, 6900 Wedgwood Rd N, Suite', 'Maple Grove, MN 5S311'))
+    expect(r).toMatchObject({ city: 'Maple Grove', region: 'MN', postal_code: '55311', street: '6900 Wedgwood Rd N' })
+    const short = parseBusinessCard(L(['Pat Kim', 30], 'pat@kimco.com', 'Maple Grove, MN 5531'))
+    expect(short).toMatchObject({ city: 'Maple Grove', postal_code: '5531' })
+  })
+
+  it('finishes a company name cut short, using the email domain', () => {
+    const r = parseBusinessCard(L(['Pat Kim', 30], 'pat.kim@guardianrfid.com', 'GUARDIAN RFI'))
+    expect(r.company).toBe('Guardian RFID')
+  })
+
   it('reads a hire date even when OCR drops a dot', () => {
     expect(parseBusinessCard(L(['Pat Kim', 30], 'HIRE DATE: 1.1521 HOME STATE: TX', 'pat@kimco.com'))).toMatchObject({ hire_date: '2021-01-15', home_state: 'TX' })
   })

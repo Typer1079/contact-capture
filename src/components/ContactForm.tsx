@@ -19,6 +19,8 @@ interface Props {
   initial: ContactDraft
   /** Fields filled automatically (from a scan) get a "check this" highlight. Address ids too. */
   autoFilled?: string[]
+  /** Fields the scanner isn't sure about (readings disagreed or the value looks wrong). */
+  uncertain?: string[]
   isEdit: boolean
   defs: CustomFieldDef[]
   onDefsChange: (defs: CustomFieldDef[]) => void
@@ -80,7 +82,7 @@ function Section({ title, children, note }: { title: string; children: ReactNode
   )
 }
 
-export default function ContactForm({ initial, autoFilled = [], isEdit, defs, onDefsChange, onSave, onCancel }: Props) {
+export default function ContactForm({ initial, autoFilled = [], uncertain = [], isEdit, defs, onDefsChange, onSave, onCancel }: Props) {
   const [draft, setDraft] = useState<ContactDraft>(() =>
     // New typed contacts start with an empty Work address ready to fill in.
     !isEdit && initial.addresses.length === 0 && initial.source === 'manual' ? { ...initial, addresses: [emptyAddress('Work')] } : initial,
@@ -157,17 +159,25 @@ export default function ContactForm({ initial, autoFilled = [], isEdit, defs, on
     }
   }
 
-  function inputClass(highlighted: boolean, error?: string) {
+  const [touched, setTouched] = useState<Set<string>>(new Set())
+  const isUncertain = (key: string) => uncertain.includes(key) && !touched.has(key)
+  const touch = (key: string) => setTouched((t) => (t.has(key) ? t : new Set(t).add(key)))
+
+  function inputClass(highlighted: boolean, error?: string, unsure = false) {
+    if (unsure && !error) return 'input border-2 border-orange-500 bg-orange-50'
     return `input ${highlighted ? 'border-amber-400 bg-amber-50' : ''} ${error ? 'border-red-500' : ''}`
   }
 
+  const checkTag = <span className="ml-1 rounded bg-orange-500 px-1 py-px text-[10px] font-bold normal-case tracking-normal text-white">Check</span>
+
   function renderField(f: FieldDef) {
     const highlighted = autoFilled.includes(f.key) && draft[f.key] === initial[f.key] && draft[f.key] !== ''
-    const cls = inputClass(highlighted, errors[f.key])
+    const unsure = isUncertain(f.key)
+    const cls = inputClass(highlighted, errors[f.key], unsure)
     const maxLength = f.key in MAX_LENGTH ? MAX_LENGTH[f.key as TextField] : undefined
     return (
-      <div key={f.key} className={f.half ? 'col-span-1' : 'col-span-2'}>
-        <label className="label" htmlFor={f.key}>{f.label}</label>
+      <div key={f.key} className={f.half ? 'col-span-1' : 'col-span-2'} onFocus={() => unsure && touch(f.key)}>
+        <label className="label" htmlFor={f.key}>{f.label}{unsure && checkTag}</label>
         {f.options ? (
           <select id={f.key} className={cls} value={draft[f.key]} onChange={(e) => set(f.key, e.target.value)}>
             {[...new Set([...f.options, draft[f.key]])].map((o) => (
@@ -217,12 +227,13 @@ export default function ContactForm({ initial, autoFilled = [], isEdit, defs, on
         <div className="grid grid-cols-2 gap-3">
           {ADDRESS_INPUTS.map((f) => {
             const err = errors[`addr:${a.id}:${f.key}`]
+            const unsure = isUncertain(`addr:${a.id}:${f.key}`)
             return (
-              <div key={f.key} className={f.half ? 'col-span-1' : 'col-span-2'}>
-                <label className="label" htmlFor={`addr-${a.id}-${f.key}`}>{f.label}</label>
+              <div key={f.key} className={f.half ? 'col-span-1' : 'col-span-2'} onFocus={() => unsure && touch(`addr:${a.id}:${f.key}`)}>
+                <label className="label" htmlFor={`addr-${a.id}-${f.key}`}>{f.label}{unsure && checkTag}</label>
                 <input
                   id={`addr-${a.id}-${f.key}`}
-                  className={inputClass(false, err)}
+                  className={inputClass(false, err, unsure)}
                   inputMode={f.inputMode}
                   autoComplete="off"
                   list={f.key === 'region' ? 'us-states' : undefined}
@@ -290,8 +301,13 @@ export default function ContactForm({ initial, autoFilled = [], isEdit, defs, on
 
       {draft.source === 'card' && autoFilled.length > 0 && (
         <div className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">
-          Filled from a photo. Please check the highlighted fields: text reading isn’t perfect. Anything that didn’t fit a field
-          (website, other phone numbers) is in Notes.
+          Filled from a photo. Yellow fields were read automatically.
+          {uncertain.length > 0 && (
+            <strong className="mt-1 block text-orange-700">
+              {uncertain.length} field{uncertain.length > 1 ? 's' : ''} marked “Check”: the readings didn’t agree or the value looks off.
+            </strong>
+          )}{' '}
+          Website, other phone numbers and extra text are in Notes.
         </div>
       )}
       {draft.source === 'license' && autoFilled.length > 0 && (
@@ -321,7 +337,7 @@ export default function ContactForm({ initial, autoFilled = [], isEdit, defs, on
         <Section title="Identification" note="Sensitive. Never added to phone contacts; only exported to CSV if you choose.">
           <div className="col-span-1">
             <label className="label" htmlFor="dob">Date of birth</label>
-            <input id="dob" type="date" className={inputClass(idHighlight('dob'), errors.dob)} autoComplete="off" value={draft.dob} onChange={(e) => set('dob', e.target.value)} />
+            <input id="dob" type="date" className={inputClass(idHighlight('dob'), errors.dob, isUncertain('dob'))} onFocus={() => touch('dob')} autoComplete="off" value={draft.dob} onChange={(e) => set('dob', e.target.value)} />
             {errors.dob && <p className="mt-1 text-xs text-red-600">{errors.dob}</p>}
           </div>
           <div className="col-span-1">
@@ -329,7 +345,8 @@ export default function ContactForm({ initial, autoFilled = [], isEdit, defs, on
             <div className="relative">
               <input
                 id="dl_number"
-                className={`${inputClass(idHighlight('dl_number'), errors.dl_number)} pr-14 ${showDl ? '' : '[-webkit-text-security:disc]'}`}
+                onFocus={() => touch('dl_number')}
+                className={`${inputClass(idHighlight('dl_number'), errors.dl_number, isUncertain('dl_number'))} pr-14 ${showDl ? '' : '[-webkit-text-security:disc]'}`}
                 autoComplete="off"
                 autoCapitalize="characters"
                 spellCheck={false}

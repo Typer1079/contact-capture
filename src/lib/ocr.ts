@@ -105,12 +105,26 @@ export interface ReadLine extends CardLine {
 }
 
 /** Pulls lines out of Tesseract's result, with position and size scaled to 0–1000 of the image height. */
-export function linesFromResult(data: TesseractData, imageHeight: number): { lines: ReadLine[]; confidence: number; words: number } {
+export function linesFromResult(
+  data: TesseractData,
+  imageHeight: number,
+): { lines: ReadLine[]; confidence: number; words: number; clarity: number } {
   const raw: TesseractLine[] = []
   for (const b of data.blocks ?? []) for (const p of b.paragraphs) for (const l of p.lines) raw.push(l)
   const k = 1000 / Math.max(1, imageHeight)
   const kept = raw.filter((l) => l.confidence >= 50 && l.text.trim())
+  // Clarity counts ALL text found, including lines too small or blurry to read well,
+  // so tiny unreadable print pulls the score down instead of being silently skipped.
+  let sum = 0
+  let n = 0
+  for (const l of raw) {
+    const len = l.text.replace(/[^A-Za-z0-9@]/g, '').length
+    if (len < 3) continue
+    sum += l.confidence * len
+    n += len
+  }
   return {
+    clarity: n ? sum / n : 0,
     lines: kept.map((l) => ({
       text: l.text.replace(/\s+/g, ' ').trim(),
       height: (l.bbox.y1 - l.bbox.y0) * k,
@@ -169,20 +183,32 @@ async function loadPhoto(file: Blob): Promise<ImageBitmap | HTMLImageElement> {
   }
 }
 
+export interface CardReading {
+  lines: ReadLine[]
+  /** How clearly the text was read: confidence 0–100 over all text found (see linesFromResult). */
+  clarity: number
+  /** Raw text seen, including lines too unclear to use (to notice e.g. an "@" that wasn't read). */
+  rawText: string
+}
+
 /**
  * Reads the text on a business card photo:
  * 1. finds the right way up (tries rotations if the first reading looks poor),
  * 2. reads it a second time widened, which catches tall narrow fonts,
  * 3. merges both readings.
  */
-export async function readCard(file: Blob, progress?: (p: number, label: string) => void): Promise<CardLine[]> {
+export async function readCard(
+  file: Blob,
+  progress?: (p: number, label: string) => void,
+  opts: { quick?: boolean } = {},
+): Promise<CardReading> {
   onProgress = progress ?? null
   const worker = await getWorker()
   const photo = await loadPhoto(file)
   const run = async (turns: number, maxDim: number, stretch: number, polarity: 1 | -1) => {
     const canvas = preprocess(photo, turns, maxDim, stretch, polarity)
-    const { data } = await worker.recognize(canvas, {}, { blocks: true, text: false })
-    return linesFromResult(data as unknown as TesseractData, canvas.height)
+    const { data } = await worker.recognize(canvas, {}, { blocks: true, text: true })
+    return { ...linesFromResult(data as unknown as TesseractData, canvas.height), rawText: (data as { text?: string }).text ?? '' }
   }
   try {
     let best: { turns: number; polarity: 1 | -1; result: Awaited<ReturnType<typeof run>> } | null = null
@@ -191,7 +217,8 @@ export async function readCard(file: Blob, progress?: (p: number, label: string)
       r.lines.reduce((sum, l) => sum + l.confidence * l.text.replace(/[^A-Za-z0-9]/g, '').length, 0) / 100
     let bestScore = -1
     // Try each way up, and dark-on-light then light-on-dark, until one reads cleanly.
-    search: for (const turns of [0, 1, 3, 2]) {
+    // Quick check (used while the camera is live): the card is already upright in the guide.
+    search: for (const turns of opts.quick ? [0] : [0, 1, 3, 2]) {
       for (const polarity of [1, -1] as const) {
         const result = await run(turns, 1600, 1, polarity)
         const score = quality(result)
@@ -202,9 +229,10 @@ export async function readCard(file: Blob, progress?: (p: number, label: string)
         if (score >= 40) break search // plenty of clean text: this is the right way up
       }
     }
-    if (!best) return []
+    if (!best) return { lines: [], clarity: 0, rawText: '' }
+    if (opts.quick) return { lines: best.result.lines, clarity: best.result.clarity, rawText: best.result.rawText }
     const wide = await run(best.turns, 1200, 1.6, best.polarity)
-    return mergeLines([best.result.lines, wide.lines])
+    return { lines: mergeLines([best.result.lines, wide.lines]), clarity: best.result.clarity, rawText: best.result.rawText + '\n' + wide.rawText }
   } finally {
     if ('close' in photo) photo.close()
     onProgress = null
