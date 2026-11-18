@@ -55,6 +55,29 @@ describe('parseBusinessCard', () => {
     expect(r.notes).toContain('Website: www.kimco.com')
   })
 
+  it('reads an ID badge: stacked name, split email, company from the email domain', () => {
+    // Lines as the text reader returned them for a real badge photo (with its misreads).
+    const r = parseBusinessCard(
+      L('ONE TEAM', ['DANIEL', 90], ['Quam', 45], 'ONE M', '832.594.1714', 'daniel.quam@guardianrfi', 'id.com', 'HIRE DATE: 1.15.21 HOME STATE: TX',
+        ['GUARDIAN RFIL, 6900 Wedgwood Rd. N, Suite 325, Maple Grove, MN 55311', 12]),
+    )
+    expect(r).toMatchObject({
+      first_name: 'Daniel', last_name: 'Quam', company: 'Guardian RFID', email: 'daniel.quam@guardianrfid.com', phone: '(832) 594-1714',
+      street: '6900 Wedgwood Rd. N, Suite 325', city: 'Maple Grove', region: 'MN', postal_code: '55311',
+    })
+    expect(r.notes).toContain('HIRE DATE')
+  })
+
+  it('uses the larger stacked word as the first name', () => {
+    const r = parseBusinessCard(L(['Smith', 30], ['JOHN', 60], '713-555-0000'))
+    expect(r).toMatchObject({ first_name: 'John', last_name: 'Smith' })
+  })
+
+  it('takes the name from the email when the card text is unreadable', () => {
+    const r = parseBusinessCard(L(['Xq Zr', 40], 'sarah.jones@pinnaclebuilders.com', '281-555-0111'))
+    expect(r).toMatchObject({ first_name: 'Sarah', last_name: 'Jones', company: 'Pinnaclebuilders' })
+  })
+
   it('puts unknown text in notes instead of dropping it', () => {
     const r = parseBusinessCard(L(['Pat Kim', 30], 'Quality you can trust since 1998', 'pat@kimco.com'))
     expect(r.notes).toContain('Quality you can trust since 1998')
