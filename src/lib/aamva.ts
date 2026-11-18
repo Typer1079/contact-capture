@@ -33,7 +33,8 @@ const ALLOWED = new Set([
 ])
 
 export function isAamva(raw: string): boolean {
-  return /^@?[\s\S]{0,6}ANSI\s?\d{6}/.test(raw) || /\bAAMVA\d{6}/.test(raw)
+  const head = raw.slice(0, 80)
+  return /ANSI\s?\d{6}/.test(head) || /AAMVA\s?\d{6}/.test(head) || (/\bDCS|DAA/.test(raw) && /DAJ/.test(raw))
 }
 
 function titleCase(s: string): string {

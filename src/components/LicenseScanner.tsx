@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { parseAamva, type LicenseContact } from '../lib/aamva'
-import { initBarcodeReader, readPdf417 } from '../lib/barcode'
+import { DESKEW_ANGLES, initBarcodeReader, scanImage, scanPhoto, type ScanResult } from '../lib/barcode'
 
 interface Props {
   onResult: (contact: LicenseContact, consentAt: string) => void
@@ -16,9 +16,9 @@ export default function LicenseScanner({ onResult, onCancel }: Props) {
   const [consentAt, setConsentAt] = useState<string | null>(null)
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
+  const [showHint, setShowHint] = useState(false)
 
   const videoRef = useRef<HTMLVideoElement>(null)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const doneRef = useRef(false)
 
@@ -28,8 +28,13 @@ export default function LicenseScanner({ onResult, onCancel }: Props) {
   }, [])
 
   const handleRaw = useCallback(
-    (raw: string | null) => {
-      if (!raw || doneRef.current || !consentAt) return false
+    (result: ScanResult) => {
+      if (doneRef.current || !consentAt) return false
+      const raw = result.text
+      if (!raw) {
+        if (result.sawSmallBarcode) setError('That’s the small barcode. Aim at the large, wide barcode on the back of the license.')
+        return false
+      }
       const parsed = parseAamva(raw)
       // `raw` holds the full license data; it goes out of scope here and is never stored or sent.
       if (!parsed) {
@@ -66,37 +71,43 @@ export default function LicenseScanner({ onResult, onCancel }: Props) {
         const video = videoRef.current!
         video.srcObject = stream
         await video.play()
-        setStatus('Hold the back of the license flat, filling the frame.')
+        setStatus('Fit the large barcode inside the frame and hold steady.')
         tick()
       } catch {
         setStatus('')
-        setError('Camera unavailable. Allow camera access, or use “Take a photo” below.')
+        setError('Camera unavailable. Allow camera access, or use “Take a photo instead” below.')
       }
     }
 
+    let frame = 0
     async function tick() {
       if (cancelled || doneRef.current) return
       const video = videoRef.current
-      const canvas = canvasRef.current
-      if (video && canvas && video.videoWidth) {
-        canvas.width = video.videoWidth
-        canvas.height = video.videoHeight
-        const ctx = canvas.getContext('2d', { willReadFrequently: true })!
-        ctx.drawImage(video, 0, 0)
+      if (video && video.videoWidth) {
+        // Only look inside the card guide (88% of the width, card-shaped), with some margin.
+        const vw = video.videoWidth
+        const vh = video.videoHeight
+        const w = Math.round(vw * 0.94)
+        const h = Math.min(vh, Math.round((w / 1.586) * 1.15))
+        const region = { x: Math.round((vw - w) / 2), y: Math.round((vh - h) / 2), w, h }
+        // Each frame: straight, plus one tilt angle, cycling through the list.
+        const angle = DESKEW_ANGLES[1 + (frame % (DESKEW_ANGLES.length - 1))]
+        frame++
         try {
-          const raw = await readPdf417(ctx.getImageData(0, 0, canvas.width, canvas.height))
-          if (handleRaw(raw)) return
+          if (handleRaw(await scanImage(video, region, [0, angle], 1920))) return
         } catch {
           /* keep scanning */
         }
       }
-      timer = window.setTimeout(tick, 250)
+      timer = window.setTimeout(tick, 120)
     }
 
+    const hintTimer = window.setTimeout(() => setShowHint(true), 8000)
     start()
     return () => {
       cancelled = true
       window.clearTimeout(timer)
+      window.clearTimeout(hintTimer)
       stopCamera()
     }
   }, [stage, handleRaw, stopCamera])
@@ -106,9 +117,10 @@ export default function LicenseScanner({ onResult, onCancel }: Props) {
     setError('')
     setStatus('Reading photo…')
     try {
-      const raw = await readPdf417(file)
-      if (!raw) setError('No license barcode found in that photo. Get closer and avoid glare.')
-      else handleRaw(raw)
+      const result = await scanPhoto(file)
+      if (!handleRaw(result) && !result.sawSmallBarcode && !result.text) {
+        setError('No license barcode found in that photo. Fill the frame with the large barcode, keep it sharp, and avoid glare.')
+      }
     } catch {
       setError('Couldn’t read that photo.')
     } finally {
@@ -161,19 +173,28 @@ export default function LicenseScanner({ onResult, onCancel }: Props) {
           <div className="aspect-[1.586] w-[88%] rounded-xl border-2 border-white/80 shadow-[0_0_0_9999px_rgba(0,0,0,0.35)]" />
         </div>
       </div>
-      <canvas ref={canvasRef} className="hidden" />
 
+      <p className="rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-600">
+        Turn the license over. Scan the <strong>large, wide barcode</strong>, not the small one.
+      </p>
       {status && <p className="text-center text-sm text-slate-600">{status}</p>}
+      {showHint && !error && (
+        <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          Having trouble? Tap <strong>Take a photo instead</strong>. Your phone’s camera focuses better up close and usually reads it on the first try.
+        </p>
+      )}
       {error && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
 
       <div className="flex gap-3">
         <button className="btn-secondary flex-1" onClick={onCancel}>Cancel</button>
-        <label className="btn-secondary flex-1 cursor-pointer">
-          Take a photo
+        <label className="btn-secondary flex-1 cursor-pointer text-center">
+          Take a photo instead
           <input type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => onPhoto(e.target.files?.[0])} />
         </label>
       </div>
-      <p className="text-center text-xs text-slate-500">Tip: a still photo often works better in low light or with glare.</p>
+      <p className="text-center text-xs text-slate-500">
+        The photo option opens your camera app. Take the picture, tap <strong>Use Photo</strong>, and you’ll come back here. The photo isn’t saved.
+      </p>
     </div>
   )
 }
