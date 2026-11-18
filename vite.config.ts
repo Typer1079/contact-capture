@@ -2,6 +2,7 @@ import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig, type Plugin } from 'vite'
 import { VitePWA } from 'vite-plugin-pwa'
+import { viteStaticCopy } from 'vite-plugin-static-copy'
 
 // Content Security Policy for production builds.
 // GitHub Pages cannot set HTTP headers, so the policy is injected as a <meta> tag.
@@ -40,6 +41,15 @@ export default defineConfig({
     react(),
     tailwindcss(),
     cspPlugin(),
+    // Self-host the OCR engine (worker, WebAssembly core, English data) so business card
+    // photos are read on the device and nothing loads from a CDN.
+    viteStaticCopy({
+      targets: [
+        { src: 'node_modules/tesseract.js/dist/worker.min.js', dest: 'ocr', rename: { stripBase: true } },
+        { src: 'node_modules/tesseract.js-core/tesseract-core-*lstm.wasm.js', dest: 'ocr/core', rename: { stripBase: true } },
+        { src: 'node_modules/@tesseract.js-data/eng/4.0.0_best_int/eng.traineddata.gz', dest: 'ocr/lang', rename: { stripBase: true } },
+      ],
+    }),
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'apple-touch-icon.png'],
@@ -60,6 +70,16 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,wasm}'],
+        // The OCR files are large (~7 MB), so they download only the first time someone
+        // scans a card, then stay cached for offline use.
+        globIgnores: ['ocr/**'],
+        runtimeCaching: [
+          {
+            urlPattern: ({ url }) => url.pathname.includes('/ocr/'),
+            handler: 'CacheFirst',
+            options: { cacheName: 'ocr-engine', expiration: { maxEntries: 10 } },
+          },
+        ],
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         // Never cache API traffic: contact data stays out of the service worker cache.
         navigateFallbackDenylist: [/^\/auth/, /^\/rest/],

@@ -4,6 +4,7 @@ import Auth from './components/Auth'
 import ContactForm from './components/ContactForm'
 import ContactList from './components/ContactList'
 import type { LicenseContact } from './lib/aamva'
+import type { CardContact } from './lib/cardParser'
 import { deleteContacts, listContacts, saveContact } from './lib/contactsApi'
 import { shareOrDownload } from './lib/download'
 import { isConfigured, supabase } from './lib/supabase'
@@ -12,11 +13,14 @@ import { toVCard, vcardFileName } from './lib/vcard'
 
 // The barcode reader (WebAssembly) only downloads when someone opens the scanner.
 const LicenseScanner = lazy(() => import('./components/LicenseScanner'))
+// Same for the text reader used on business cards.
+const CardScanner = lazy(() => import('./components/CardScanner'))
 
 type View =
   | { name: 'home' }
   | { name: 'list' }
   | { name: 'scan' }
+  | { name: 'card' }
   | { name: 'form'; draft: ContactDraft; editing?: Contact; autoFilled?: TextField[] }
 
 export default function App() {
@@ -81,6 +85,12 @@ export default function App() {
     setView({ name: 'form', draft, autoFilled })
   }
 
+  function handleCard(result: CardContact) {
+    const draft: ContactDraft = { ...emptyDraft('card'), ...result }
+    const autoFilled = (Object.keys(result) as TextField[]).filter((k) => k !== 'notes' && result[k as keyof CardContact])
+    setView({ name: 'form', draft, autoFilled })
+  }
+
   if (!isConfigured) {
     return (
       <div className="mx-auto max-w-md p-6 text-sm">
@@ -97,7 +107,7 @@ export default function App() {
   if (!session) return <Auth />
 
   const title =
-    view.name === 'home' ? 'Contact Capture' : view.name === 'list' ? 'Saved contacts' : view.name === 'scan' ? 'Scan license' : view.editing ? 'Edit contact' : 'New contact'
+    view.name === 'home' ? 'Contact Capture' : view.name === 'list' ? 'Saved contacts' : view.name === 'scan' ? 'Scan license' : view.name === 'card' ? 'Scan business card' : view.editing ? 'Edit contact' : 'New contact'
 
   return (
     <div className="mx-auto flex min-h-dvh max-w-lg flex-col">
@@ -128,10 +138,17 @@ export default function App() {
                 <span className="block text-sm text-slate-500">Enter details by hand</span>
               </span>
             </button>
-            <div className="card flex w-full items-center gap-4 opacity-60">
-              <span className="flex size-12 items-center justify-center rounded-xl bg-slate-300 text-xl text-white" aria-hidden>▭</span>
+            <button className="card flex w-full items-center gap-4 text-left hover:bg-slate-50" onClick={() => setView({ name: 'card' })}>
+              <span className="flex size-12 items-center justify-center rounded-xl bg-slate-900 text-xl text-white" aria-hidden>▭</span>
               <span>
-                <span className="block font-semibold">Business card · Voice</span>
+                <span className="block font-semibold">Scan business card</span>
+                <span className="block text-sm text-slate-500">Photo → name, title, company, email, phone, address</span>
+              </span>
+            </button>
+            <div className="card flex w-full items-center gap-4 opacity-60">
+              <span className="flex size-12 items-center justify-center rounded-xl bg-slate-300 text-xl text-white" aria-hidden>🎙</span>
+              <span>
+                <span className="block font-semibold">Voice</span>
                 <span className="block text-sm text-slate-500">Coming next</span>
               </span>
             </div>
@@ -157,6 +174,12 @@ export default function App() {
         {view.name === 'scan' && (
           <Suspense fallback={<p className="py-8 text-center text-sm text-slate-500">Loading scanner…</p>}>
             <LicenseScanner onResult={handleLicense} onCancel={() => setView({ name: 'home' })} />
+          </Suspense>
+        )}
+
+        {view.name === 'card' && (
+          <Suspense fallback={<p className="py-8 text-center text-sm text-slate-500">Loading scanner…</p>}>
+            <CardScanner onResult={handleCard} onCancel={() => setView({ name: 'home' })} />
           </Suspense>
         )}
 

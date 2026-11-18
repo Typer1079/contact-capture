@@ -12,8 +12,10 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.119.0",
+    "@tesseract.js-data/eng": "^1.0.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
+    "tesseract.js": "^7.0.0",
     "zxing-wasm": "^3.1.7"
   },
   "devDependencies": {
@@ -27,6 +29,7 @@
     "typescript": "~7.0.2",
     "vite": "^8.3.6",
     "vite-plugin-pwa": "^2.0.0",
+    "vite-plugin-static-copy": "^4.1.1",
     "vitest": "^5.1.0"
   }
 }

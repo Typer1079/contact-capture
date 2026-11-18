@@ -100,6 +100,12 @@ export default function ContactForm({ initial, autoFilled = [], isEdit, onSave, 
 
   return (
     <form onSubmit={submit} className="space-y-4" noValidate>
+      {draft.source === 'card' && autoFilled.length > 0 && (
+        <div className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">
+          Filled from a business card photo. Please check the highlighted fields: text reading isn’t perfect. Anything that
+          didn’t fit a field (website, other phone numbers) is in Notes.
+        </div>
+      )}
       {draft.source === 'license' && autoFilled.length > 0 && (
         <div className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">
           Filled from a license barcode. Highlighted fields need a quick check. The license number and birth date were
