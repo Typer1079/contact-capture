@@ -18,7 +18,13 @@ interface Props {
 /** Card shape: between a business card (1.75) and an ID card (1.59). */
 const CARD_ASPECT = 1.65
 const ANALYSIS_WIDTH = 320
-const TICK_MS = 120
+const TICK_MS = 130
+/** Remembers which camera request worked on this phone, so the next start uses it first. */
+const REQUEST_KEY = 'contact-capture.camera-request'
+/** Let the camera run on its own briefly before starting any picture checks (smoother start). */
+const ANALYSIS_DELAY_MS = 400
+/** The text reader (7 MB) loads this long after the picture appears, not during camera start. */
+const OCR_WARMUP_DELAY_MS = 1500
 /** Don't auto-capture in the first moments: let the camera's autofocus start working. */
 const SETTLE_MS = 600
 /** Frames in a row that must pass before capturing (~0.25 s). */
@@ -120,8 +126,8 @@ function coarseMotion(a: Gray, b: Gray | null, r: Rect): number {
 
 /** Detail score of the middle of the guide at full camera resolution. */
 function fineFocus(video: HTMLVideoElement, r: Rect, canvas: HTMLCanvasElement): number {
-  const w = Math.min(900, Math.round(r.w * 0.5))
-  const h = Math.min(600, Math.round(r.h * 0.5))
+  const w = Math.min(640, Math.round(r.w * 0.5))
+  const h = Math.min(400, Math.round(r.h * 0.5))
   if (w < 20 || h < 20) return 0
   canvas.width = w
   canvas.height = h
@@ -148,6 +154,9 @@ export default function CardCamera({ onCapture, onChoosePhoto, onCancel, onUnava
   const [attempt, setAttempt] = useState(0)
   // Hidden diagnostics: tap the status text 3 times to show live focus/movement numbers.
   const [debug, setDebug] = useState('')
+  const startInfo = useRef('')
+  const setStartInfo = (v: string) => (startInfo.current = v)
+  const [elapsed, setElapsed] = useState(0)
   const debugRef = useRef(false)
   const taps = useRef<number[]>([])
   const tapStatus = () => {
@@ -224,22 +233,38 @@ export default function CardCamera({ onCapture, onChoosePhoto, onCancel, onUnava
       { video: true, audio: false },
     ]
 
-    const start = async (i: number): Promise<void> => {
+    // Start with the request that worked last time on this phone (skips any slow/failed ones).
+    let remembered = 0
+    try {
+      remembered = Math.min(requests.length - 1, Math.max(0, Number(localStorage.getItem(REQUEST_KEY) ?? 0) || 0))
+    } catch {
+      /* storage unavailable */
+    }
+    const order = [remembered, ...requests.map((_, k) => k).filter((k) => k !== remembered)]
+    let current = 0
+    const opened = performance.now()
+    let granted = 0
+
+    const start = async (step: number): Promise<void> => {
+      const i = order[step]
+      current = i
       window.clearTimeout(watchdog)
       stop()
-      setCam({ phase: 'requesting', try: i + 1 })
+      setCam({ phase: 'requesting', try: step + 1 })
       let stream: MediaStream
+      const asked = performance.now()
       try {
         stream = await navigator.mediaDevices.getUserMedia(requests[i])
+        granted = performance.now() - asked
       } catch (err) {
         if (cancelled) return
         const e = err as DOMException
         if (e?.name === 'NotAllowedError' || e?.name === 'SecurityError') {
-          setCam({ phase: 'failed', try: i + 1, error: 'denied' })
+          setCam({ phase: 'failed', try: step + 1, error: 'denied' })
           return
         }
-        if (i + 1 < requests.length) return start(i + 1)
-        setCam({ phase: 'failed', try: i + 1, error: `${e?.name ?? 'Error'}: ${e?.message ?? 'camera unavailable'}` })
+        if (step + 1 < order.length) return start(step + 1)
+        setCam({ phase: 'failed', try: step + 1, error: `${e?.name ?? 'Error'}: ${e?.message ?? 'camera unavailable'}` })
         return
       }
       if (cancelled) {
@@ -247,12 +272,12 @@ export default function CardCamera({ onCapture, onChoosePhoto, onCancel, onUnava
         return
       }
       streamRef.current = stream
-      setCam({ phase: 'waiting', try: i + 1 })
+      setCam({ phase: 'waiting', try: step + 1 })
       video.srcObject = stream
       watchdog = window.setTimeout(() => {
         if (cancelled || video.videoWidth) return
-        if (i + 1 < requests.length) void start(i + 1)
-        else setCam({ phase: 'failed', try: i + 1, error: 'The camera turned on but sent no picture.' })
+        if (step + 1 < order.length) void start(step + 1)
+        else setCam({ phase: 'failed', try: step + 1, error: 'The camera turned on but sent no picture.' })
       }, 4000)
       try {
         await video.play()
@@ -264,7 +289,19 @@ export default function CardCamera({ onCapture, onChoosePhoto, onCancel, onUnava
     const live = () => {
       if (!video.videoWidth || cancelled) return
       window.clearTimeout(watchdog)
-      setCam((c) => (c.phase === 'live' ? c : { phase: 'live', try: c.try }))
+      setCam((c) => {
+        if (c.phase === 'live') return c
+        try {
+          localStorage.setItem(REQUEST_KEY, String(current))
+        } catch {
+          /* storage unavailable */
+        }
+        const total = (performance.now() - opened) / 1000
+        setStartInfo(
+          `camera ready ${total.toFixed(1)}s · request ${current + 1}/3 · permission ${(granted / 1000).toFixed(1)}s · ${video.videoWidth}×${video.videoHeight}`,
+        )
+        return { phase: 'live', try: c.try }
+      })
     }
     video.addEventListener('loadeddata', live)
     video.addEventListener('playing', live)
@@ -280,10 +317,21 @@ export default function CardCamera({ onCapture, onChoosePhoto, onCancel, onUnava
     }
   }, [attempt, stop])
 
+  // Count seconds while the camera is starting, so a slow start is visible.
+  useEffect(() => {
+    if (cam.phase === 'live' || cam.phase === 'failed') return
+    const t0 = Date.now()
+    const t = window.setInterval(() => setElapsed(Math.floor((Date.now() - t0) / 1000)), 500)
+    return () => {
+      window.clearInterval(t)
+      setElapsed(0)
+    }
+  }, [cam.phase, attempt])
+
   // Load the text reader only once the picture is live, so it doesn't slow the camera start.
   useEffect(() => {
     if (cam.phase !== 'live') return
-    const t = window.setTimeout(() => onReady?.(), 250)
+    const t = window.setTimeout(() => onReady?.(), OCR_WARMUP_DELAY_MS)
     return () => window.clearTimeout(t)
   }, [cam.phase, onReady])
 
@@ -322,10 +370,14 @@ export default function CardCamera({ onCapture, onChoosePhoto, onCancel, onUnava
     let previous: Gray | null = null
     let good = 0
     const recentFocus: number[] = []
+    let tick = 0
+    let focus = 0
     const timer = window.setInterval(() => {
       const video = videoRef.current
       const l = layoutRef.current
       if (!video || !l || doneRef.current || !video.videoWidth) return
+      if (!liveSince.current || Date.now() - liveSince.current < ANALYSIS_DELAY_MS) return
+      tick++
       small.width = ANALYSIS_WIDTH
       small.height = Math.round((ANALYSIS_WIDTH * video.videoHeight) / video.videoWidth)
       ctx.drawImage(video, 0, 0, small.width, small.height)
@@ -337,7 +389,8 @@ export default function CardCamera({ onCapture, onChoosePhoto, onCancel, onUnava
       const c = coarse(gray)
       const motion = coarseMotion(c, previous, { x: guide.x / 4, y: guide.y / 4, w: guide.w / 4, h: guide.h / 4 })
       previous = c
-      const focus = fineFocus(video, r, patch)
+      // The full-resolution focus check is the heaviest step: every other tick is plenty.
+      if (tick % 2 === 1 || !focus) focus = fineFocus(video, r, patch)
       recentFocus.push(focus)
       if (recentFocus.length > FOCUS_WINDOW) recentFocus.shift()
       const best = Math.max(...recentFocus)
@@ -354,7 +407,9 @@ export default function CardCamera({ onCapture, onChoosePhoto, onCancel, onUnava
       else h = 'ok'
       setHint(h)
       if (debugRef.current) {
-        setDebug(`focus ${focus.toFixed(1)} / best ${best.toFixed(1)} · move ${motion.toFixed(1)} · sides ${report.sides.map((v) => v.toFixed(1)).join(' ')} · light ${report.brightness.toFixed(0)}`)
+        setDebug(
+          `${startInfo.current}\nfocus ${focus.toFixed(1)} / best ${best.toFixed(1)} · move ${motion.toFixed(1)} · sides ${report.sides.map((v) => v.toFixed(1)).join(' ')} · light ${report.brightness.toFixed(0)}`,
+        )
       }
       good = h === 'ok' && age > SETTLE_MS ? good + 1 : 0
       setSteady(good)
@@ -368,12 +423,14 @@ export default function CardCamera({ onCapture, onChoosePhoto, onCancel, onUnava
     cam.phase === 'requesting'
       ? cam.try > 1
         ? `Retrying the camera (${cam.try}/3)…`
-        : 'Asking for the camera…'
-      : cam.phase === 'failed'
+        : `Asking for the camera…${elapsed ? ` ${elapsed}s` : ''}`
+      : cam.phase === 'waiting'
+        ? `Starting camera…${elapsed ? ` ${elapsed}s` : ''}`
+        : cam.phase === 'failed'
         ? 'Camera unavailable'
         : capturing
           ? 'Got it'
-          : hint === 'starting' || cam.phase === 'waiting'
+          : hint === 'starting'
             ? 'Starting camera…'
             : hint === 'ok'
               ? 'Hold still…'
@@ -415,7 +472,7 @@ export default function CardCamera({ onCapture, onChoosePhoto, onCancel, onUnava
         )}
         {capturing && <div className="pointer-events-none absolute inset-0 animate-pulse bg-white/30" />}
         {debug && (
-          <div className="pointer-events-none absolute inset-x-2 bottom-2 rounded bg-black/70 px-2 py-1 font-mono text-[10px] leading-tight text-emerald-300">{debug}</div>
+          <div className="pointer-events-none absolute inset-x-2 bottom-2 whitespace-pre-line rounded bg-black/70 px-2 py-1 font-mono text-[10px] leading-tight text-emerald-300">{debug}</div>
         )}
 
         {/* Top bar floats over the picture so it doesn't take space. */}
