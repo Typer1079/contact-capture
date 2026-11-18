@@ -77,6 +77,13 @@ describe('parseBusinessCard', () => {
     expect(short).toMatchObject({ city: 'Maple Grove', postal_code: '5531' })
   })
 
+  it('separates a suite that runs into the city ("Suite 325 Maple Grove")', () => {
+    const r = parseBusinessCard(L(['Pat Kim', 30], 'pat@kimco.com', 'GUARDIAN RFID, 6900 Wedgwood Rd. N, Sute 325 Maple Grove, MN 55311'))
+    expect(r).toMatchObject({ street: '6900 Wedgwood Rd. N', suite: 'Suite 325', city: 'Maple Grove', region: 'MN', postal_code: '55311' })
+    const two = parseBusinessCard(L(['Pat Kim', 30], 'pat@kimco.com', '6900 Wedgwood Rd. N', 'Ste 4 Houston, TX 77002'))
+    expect(two).toMatchObject({ street: '6900 Wedgwood Rd. N', suite: 'Ste 4', city: 'Houston' })
+  })
+
   it('splits a misread "Suite" off the street', () => {
     expect(splitSuite('6900 Wedgwood Rd N, Sute 325')).toEqual(['6900 Wedgwood Rd N', 'Suite 325'])
     expect(splitSuite('1500 Main Street, Suite 200')).toEqual(['1500 Main Street', 'Suite 200'])

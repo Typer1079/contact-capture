@@ -30,3 +30,26 @@
 @utility card {
   @apply rounded-2xl border border-slate-200 bg-white p-4 shadow-sm;
 }
+
+/* Single-line fields share one height so rows line up (dates and dropdowns included). */
+input.input,
+select.input {
+  height: 2.875rem;
+}
+
+/* iPhone Safari gives date fields a built-in minimum width and extra height, which pushed them
+   into the next column. Remove that and keep the date text left-aligned like other fields. */
+input[type='date'].input {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+}
+input[type='date'].input::-webkit-date-and-time-value {
+  text-align: left;
+  margin: 0;
+}
+input[type='date'].input::-webkit-datetime-edit {
+  padding: 0;
+}

@@ -176,7 +176,7 @@ export default function ContactForm({ initial, autoFilled = [], uncertain = [], 
     const cls = inputClass(highlighted, errors[f.key], unsure)
     const maxLength = f.key in MAX_LENGTH ? MAX_LENGTH[f.key as TextField] : undefined
     return (
-      <div key={f.key} className={f.half ? 'col-span-1' : 'col-span-2'} onFocus={() => unsure && touch(f.key)}>
+      <div key={f.key} className={`min-w-0 ${f.half ? 'col-span-1' : 'col-span-2'}`} onFocus={() => unsure && touch(f.key)}>
         <label className="label" htmlFor={f.key}>{f.label}{unsure && checkTag}</label>
         {f.options ? (
           <select id={f.key} className={cls} value={draft[f.key]} onChange={(e) => set(f.key, e.target.value)}>
@@ -229,7 +229,7 @@ export default function ContactForm({ initial, autoFilled = [], uncertain = [], 
             const err = errors[`addr:${a.id}:${f.key}`]
             const unsure = isUncertain(`addr:${a.id}:${f.key}`)
             return (
-              <div key={f.key} className={f.half ? 'col-span-1' : 'col-span-2'} onFocus={() => unsure && touch(`addr:${a.id}:${f.key}`)}>
+              <div key={f.key} className={`min-w-0 ${f.half ? 'col-span-1' : 'col-span-2'}`} onFocus={() => unsure && touch(`addr:${a.id}:${f.key}`)}>
                 <label className="label" htmlFor={`addr-${a.id}-${f.key}`}>{f.label}{unsure && checkTag}</label>
                 <input
                   id={`addr-${a.id}-${f.key}`}
@@ -335,12 +335,12 @@ export default function ContactForm({ initial, autoFilled = [], uncertain = [], 
         <Section title="Employment">{EMPLOYMENT.map(renderField)}</Section>
 
         <Section title="Identification" note="Sensitive. Never added to phone contacts; only exported to CSV if you choose.">
-          <div className="col-span-1">
+          <div className="col-span-1 min-w-0">
             <label className="label" htmlFor="dob">Date of birth</label>
             <input id="dob" type="date" className={inputClass(idHighlight('dob'), errors.dob, isUncertain('dob'))} onFocus={() => touch('dob')} autoComplete="off" value={draft.dob} onChange={(e) => set('dob', e.target.value)} />
             {errors.dob && <p className="mt-1 text-xs text-red-600">{errors.dob}</p>}
           </div>
-          <div className="col-span-1">
+          <div className="col-span-1 min-w-0">
             <label className="label" htmlFor="dl_number">Driver’s license #</label>
             <div className="relative">
               <input

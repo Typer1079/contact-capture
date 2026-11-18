@@ -94,6 +94,8 @@ const fixZipDigits = (z: string) => z.replace(/[Ss]/g, '5').replace(/[Oo]/g, '0'
 const STREET =
   /^\s*\d{1,6}[A-Z]?\s+([NSEW]\.?\s+)?[\w.' -]+?\b(st|street|ave|avenue|blvd|boulevard|rd|road|dr|drive|ln|lane|way|pkwy|parkway|hwy|highway|fwy|freeway|ct|court|cir|circle|pl|place|ter|terrace|trl|trail|loop|sq|square|plaza|center|ctr)\b\.?(.*)$/i
 const SUITE = /^\s*(suite|ste\.?|unit|apt\.?|#|floor|fl\.?|bldg\.?|building)\s*[\w-]+/i
+/** A suite at the start of the city text: "Suite 325 Maple Grove", "Ste. 4 Houston", "# 12 Austin". */
+const SUITE_THEN_CITY = /^((?:suite|su[il]?te|suit|svite|sube|ste\.?|unit|apt\.?|#|room|rm\.?|floor|fl\.?)\s*#?\s*[\w-]*\d[\w-]*)[,\s]+([A-Za-z].*)$/i
 const PO_BOX = /^\s*p\.?\s*o\.?\s*box\s+\d+/i
 
 const EMAIL = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i
@@ -355,7 +357,14 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
       const tail = parts.slice(k).join(', ')
       const m = tail.match(CITY_STATE_ZIP)
       if (!m) continue
-      const cityPart = m[1].trim()
+      let cityPart = m[1].trim()
+      // "Suite 325 Maple Grove" (no comma after the suite number): the suite isn't part of the city.
+      const suiteFirst = cityPart.match(SUITE_THEN_CITY)
+      let suiteFromCity = ''
+      if (suiteFirst) {
+        suiteFromCity = suiteFirst[1].trim()
+        cityPart = suiteFirst[2].trim()
+      }
       // "ACME LLC, 123 Main St, ..." -> parts before the street number are a company, not an address.
       let headParts = parts.slice(0, k)
       const firstStreet = headParts.findIndex((h) => /^\s*\d/.test(h) || PO_BOX.test(h))
@@ -366,6 +375,7 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
       }
       const head = headParts.join(', ')
       out.city = titleCaseIfShouting(cityPart)
+      if (suiteFromCity) out.suite = suiteFromCity.replace(/^(su[il]?te|suit|svite|sube)\b/i, 'Suite')
       out.region = m[2].toUpperCase()
       const zip5 = fixZipDigits(m[3])
       out.postal_code = m[4] && m[4] !== '0000' ? `${zip5}-${m[4]}` : zip5
@@ -527,7 +537,11 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
   if (out.company) lines.forEach((l, i) => squash(l.text) === squash(out.company) && used.add(i))
 
   // Street and suite go in separate fields.
-  if (out.street) [out.street, out.suite] = splitSuite(out.street)
+  if (out.street) {
+    const [st, su] = splitSuite(out.street)
+    out.street = st
+    out.suite = su || out.suite
+  }
   // A "Suite" whose number was lost ("…Rd N, Suite") is dropped rather than kept half-read.
   out.street = out.street.replace(/,?\s*\b(suite|ste\.?|unit|apt\.?|#)\s*$/i, '').trim()
 

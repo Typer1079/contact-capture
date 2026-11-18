@@ -25,6 +25,8 @@ describe('accuracy checks', () => {
   it('flags a ZIP/state mismatch, OCR junk in names, and an off company', () => {
     expect(suspiciousFields({ ...base, postal_code: '75311' })).toEqual(expect.arrayContaining(['postal_code', 'region']))
     expect(suspiciousFields({ ...base, last_name: 'Qu4m' })).toContain('last_name')
+    expect(suspiciousFields({ ...base, city: 'Madde owe' })).toContain('city')
+    expect(suspiciousFields({ ...base, city: 'Port of Spain' })).not.toContain('city')
     expect(suspiciousFields({ ...base, company: 'One Mission' })).toContain('company')
     expect(suspiciousFields({ ...base, email: 'daniel.quam@guardianrfid' })).toContain('email')
   })

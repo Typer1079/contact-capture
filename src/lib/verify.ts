@@ -59,6 +59,8 @@ export function suspiciousFields(c: Checkable): string[] {
     }
   }
   if (c.postal_code && !/^\d{5}(-\d{4})?$/.test(c.postal_code) && !/^[A-Z]\d[A-Z] ?\d[A-Z]\d$/i.test(c.postal_code)) out.add('postal_code')
+  // A city with a lowercase word ("Madde owe") is usually a misread.
+  if (c.city && c.city.split(/\s+/).some((w) => w.length >= 3 && /^[a-z]/.test(w) && !/^(de|del|la|las|los|of|on|upon|du|le)$/.test(w))) out.add('city')
   // OCR noise in names: digits or stray symbols.
   for (const f of ['first_name', 'last_name', 'city'] as const) if (c[f] && /[^A-Za-zÀ-ÿ'’. -]/.test(c[f])) out.add(f)
   // Company should usually echo a work email's domain; a mismatch is worth a look.
