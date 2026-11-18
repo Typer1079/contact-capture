@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { parseBusinessCard, type CardContact } from '../lib/cardParser'
-import { readCard, warmUpOcr, type ReadLine } from '../lib/ocr'
-import { mergeReadings, suspiciousFields } from '../lib/verify'
-import CardCamera, { type Verdict } from './CardCamera'
+import { readCard, warmUpOcr } from '../lib/ocr'
+import { suspiciousFields } from '../lib/verify'
+import CardCamera from './CardCamera'
 
 export interface IdConsent {
   consentAt: string
@@ -18,39 +18,11 @@ interface Props {
   onCancel: () => void
 }
 
-/**
- * Text read at least this confidently counts as clear (0–100, over ALL text on the card,
- * including logos and fine print, so a sharp close-up of a real card scores ~70).
- * Tested: card close & sharp ≈ 70–72, too far ≈ 49, moving / focusing ≈ 36–56.
- */
-const CLEAR = 62
-/** One reading this clear (with name + phone/email) is enough on its own. */
-const VERY_CLEAR = 80
-/** After this many readings with only one clear one, use it rather than keep waiting. */
-const MAX_TRIES = 5
-
-const FIELDS = [
-  'first_name', 'last_name', 'company', 'title', 'email', 'phone', 'street', 'suite', 'city', 'region', 'postal_code',
-  'country', 'hire_date', 'home_state', 'dob', 'dl_number', 'sex', 'height', 'eye_color',
-] as const satisfies readonly (keyof CardContact)[]
-
-interface Reading {
-  photo: Blob
-  lines: ReadLine[]
-  contact: CardContact
-  clarity: number
-  hasKeyFields: boolean
-}
-
-/** Complete enough: a name plus a way to reach them, and no email that was seen but not read. */
-function hasKeyFields(c: CardContact, rawText: string): boolean {
-  const name = Boolean(c.first_name || c.last_name || c.company)
-  const emailSeenNotRead = rawText.includes('@') && !c.email
-  return name && Boolean(c.email || c.phone || c.dl_number) && !emailSeenNotRead
-}
+/** Below this text-reading confidence (0–100) the photo was probably blurry or too small. */
+const LOW_CLARITY = 55
 
 export default function CardScanner({ onResult, onCancel }: Props) {
-  // Opens straight into the live viewfinder; falls back to photo buttons if there's no camera.
+  // Opens straight into the viewfinder; falls back to photo buttons if there's no camera.
   const [camera, setCamera] = useState<'open' | 'closed' | 'unavailable'>('open')
   const [preview, setPreview] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -61,38 +33,37 @@ export default function CardScanner({ onResult, onCancel }: Props) {
   const [requested, setRequested] = useState(false)
   const [personalUse, setPersonalUse] = useState(false)
   const [includeSensitive, setIncludeSensitive] = useState(false)
-  const readings = useRef<Reading[]>([])
 
-  // Which way up the text was last time (cards are usually held the same way for every try).
-  const turnsRef = useRef<number | null>(null)
   useEffect(() => () => {
     if (preview) URL.revokeObjectURL(preview)
   }, [preview])
 
-  /** Careful read of the best photo, combined with the quick readings, then accuracy checks. */
-  const finish = useCallback(
-    async (best: Reading, others: Reading[]) => {
+  /** One careful read of the photo, then the accuracy checks. */
+  const read = useCallback(
+    async (photo: Blob, sideways = false) => {
       setCamera((c) => (c === 'unavailable' ? c : 'closed'))
-      setPreview(URL.createObjectURL(best.photo))
+      setPreview(URL.createObjectURL(photo))
       setBusy(true)
       setError('')
-      setProgress({ p: 0, label: 'Checking the details…' })
+      setProgress({ p: 0, label: 'Reading the card…' })
       try {
-        const { lines } = await readCard(best.photo, (p) => setProgress({ p, label: 'Checking the details…' }), {
-          turnOrder: turnsRef.current !== null ? [turnsRef.current] : undefined,
+        const { lines, clarity } = await readCard(photo, (p, label) => setProgress({ p, label: p < 1 && label.startsWith('Loading') ? label : 'Reading the card…' }), {
+          // A card lying sideways in a tall frame reads after a quarter turn.
+          turnOrder: sideways ? [1, 3, 0, 2] : [0, 1, 3, 2],
         })
-        const careful = parseBusinessCard(lines)
-        // Vote across readings: the careful one (counts double) plus the other clear quick ones.
-        const quick = [best, ...others].filter((r) => r.clarity >= CLEAR && r.lines.length).map((r) => r.contact)
-        const voters = quick.length ? [careful, careful, ...quick] : [careful]
-        const { merged, disputed } = voters.length > 1 ? mergeReadings(voters, careful, [...FIELDS]) : { merged: careful, disputed: [] }
-        const contact: CardContact = { ...merged, notes: careful.notes, is_id: voters.some((v) => v.is_id) }
+        const contact = parseBusinessCard(lines)
         const found = [contact.first_name, contact.last_name, contact.company, contact.email, contact.phone].some(Boolean)
         if (!found) {
-          setError('Couldn’t find contact details. Retake in good light, with the card filling the frame.')
+          setError('Couldn’t find contact details. Retake with the card filling the frame, in good light.')
           return
         }
-        const uncertain = [...new Set([...disputed, ...suspiciousFields(contact)])]
+        const uncertain = suspiciousFields(contact)
+        // A blurry photo: flag every text field that was filled so nothing is trusted blindly.
+        if (clarity < LOW_CLARITY) {
+          for (const k of ['first_name', 'last_name', 'company', 'title', 'email', 'phone', 'street', 'city', 'postal_code'] as const) {
+            if (contact[k] && !uncertain.includes(k)) uncertain.push(k)
+          }
+        }
         if (contact.is_id) setPendingId({ contact, uncertain })
         else onResult(contact, undefined, uncertain)
       } catch {
@@ -104,52 +75,13 @@ export default function CardScanner({ onResult, onCancel }: Props) {
     [onResult],
   )
 
-  /** Live camera: quick-read a frame and decide whether the text is clear enough. */
-  const evaluate = useCallback(
-    async (photo: Blob, report: (p: number) => void, sideways: boolean): Promise<Verdict> => {
-      // A card lying sideways in a tall frame reads after a quarter turn (either way).
-      const guess = sideways ? [1, 3, 0] : [0]
-      const turnOrder = turnsRef.current !== null ? [turnsRef.current, ...guess.filter((t) => t !== turnsRef.current)] : guess
-      const { lines, clarity, rawText, turns } = await readCard(photo, (p) => report(p), { quick: true, turnOrder })
-      if (clarity >= CLEAR) turnsRef.current = turns
-      const contact = parseBusinessCard(lines)
-      const reading: Reading = { photo, lines, contact, clarity, hasKeyFields: hasKeyFields(contact, rawText) }
-      readings.current.push(reading)
-      const all = readings.current
-      const clear = all.filter((r) => r.clarity >= CLEAR && r.hasKeyFields)
-      const best = [...(clear.length ? clear : all)].sort((a, b) => b.clarity - a.clarity)[0]
-      // Never settle for unclear text: keep the camera going until at least one clear reading.
-      const enough = clear.length >= 2 || (clear.length === 1 && (reading.clarity >= VERY_CLEAR || all.length >= MAX_TRIES))
-      if (enough) {
-        void finish(best, all.filter((r) => r !== best))
-        return { done: true }
-      }
-      if (reading.clarity >= CLEAR && reading.hasKeyFields) return { done: false, message: 'Good, one more to double-check… hold still' }
-      if (reading.clarity >= CLEAR) return { done: false, message: 'Some details aren’t readable yet: fit the whole card in the frame, avoid glare' }
-      if (lines.length === 0) return { done: false, message: 'No text found yet: fill the frame with the card' }
-      if (all.length >= MAX_TRIES) return { done: false, message: 'Still can’t read the small text. Turn your phone sideways and move closer, or tap the button to use this photo.' }
-      return { done: false, message: 'Text is too small or fuzzy: move closer, or turn your phone sideways' }
-    },
-    [finish],
-  )
-
-  /** Manual shutter or a chosen photo: one careful read. */
-  const single = useCallback(
-    (photo: Blob) => {
-      readings.current = []
-      void finish({ photo, lines: [], contact: parseBusinessCard([]), clarity: 0, hasKeyFields: false }, [])
-    },
-    [finish],
-  )
-
   const cameraUnavailable = useCallback(() => setCamera('unavailable'), [])
 
   if (camera === 'open') {
     return (
       <CardCamera
-        evaluate={evaluate}
-        onManual={single}
-        onChoosePhoto={single}
+        onCapture={(photo, sideways) => void read(photo, sideways)}
+        onChoosePhoto={(file) => void read(file)}
         onCancel={onCancel}
         onUnavailable={cameraUnavailable}
         onReady={warmUpOcr}
@@ -234,15 +166,13 @@ export default function CardScanner({ onResult, onCancel }: Props) {
         {camera === 'unavailable' ? (
           <label className={`btn-primary col-span-2 cursor-pointer text-center ${busy ? 'pointer-events-none opacity-50' : ''}`}>
             {preview ? 'Retake photo' : 'Take photo of card'}
-            <input type="file" accept="image/*" capture="environment" className="hidden" disabled={busy} onChange={(e) => e.target.files?.[0] && single(e.target.files[0])} />
+            <input type="file" accept="image/*" capture="environment" className="hidden" disabled={busy} onChange={(e) => e.target.files?.[0] && void read(e.target.files[0])} />
           </label>
         ) : (
           <button
             className="btn-primary col-span-2"
             disabled={busy}
             onClick={() => {
-              readings.current = []
-              turnsRef.current = null
               setPreview(null)
               setError('')
               setCamera('open')
@@ -253,7 +183,7 @@ export default function CardScanner({ onResult, onCancel }: Props) {
         )}
         <label className={`btn-secondary cursor-pointer text-center ${busy ? 'pointer-events-none opacity-50' : ''}`}>
           Choose photo
-          <input type="file" accept="image/*" className="hidden" disabled={busy} onChange={(e) => e.target.files?.[0] && single(e.target.files[0])} />
+          <input type="file" accept="image/*" className="hidden" disabled={busy} onChange={(e) => e.target.files?.[0] && void read(e.target.files[0])} />
         </label>
         <button className="btn-secondary" onClick={onCancel} disabled={busy}>Cancel</button>
       </div>

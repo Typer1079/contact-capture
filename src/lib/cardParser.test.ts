@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseBusinessCard, type CardLine } from './cardParser'
+import { parseBusinessCard, splitSuite, type CardLine } from './cardParser'
 
 const L = (...rows: (string | [string, number])[]): CardLine[] =>
   rows.map((r) => (typeof r === 'string' ? { text: r, height: 20 } : { text: r[0], height: r[1] }))
@@ -75,6 +75,13 @@ describe('parseBusinessCard', () => {
     expect(r).toMatchObject({ city: 'Maple Grove', region: 'MN', postal_code: '55311', street: '6900 Wedgwood Rd N' })
     const short = parseBusinessCard(L(['Pat Kim', 30], 'pat@kimco.com', 'Maple Grove, MN 5531'))
     expect(short).toMatchObject({ city: 'Maple Grove', postal_code: '5531' })
+  })
+
+  it('splits a misread "Suite" off the street', () => {
+    expect(splitSuite('6900 Wedgwood Rd N, Sute 325')).toEqual(['6900 Wedgwood Rd N', 'Suite 325'])
+    expect(splitSuite('1500 Main Street, Suite 200')).toEqual(['1500 Main Street', 'Suite 200'])
+    expect(splitSuite('100 Example St Apt 4')).toEqual(['100 Example St', 'Apt 4'])
+    expect(splitSuite('12 Unity Ave')).toEqual(['12 Unity Ave', ''])
   })
 
   it('removes stray brackets around the @ in an email', () => {

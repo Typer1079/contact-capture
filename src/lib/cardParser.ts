@@ -67,9 +67,12 @@ const EYES_RE = /\bEYES\s*[:.]?\s*([A-Z]{3})\b/i
 
 /** "1500 Main St, Suite 200" -> ["1500 Main St", "Suite 200"] */
 export function splitSuite(street: string): [string, string] {
-  const m = street.match(/^(.*?)(?:,\s*|\s+)((?:suite|ste\.?|unit|apt\.?|apartment|#|floor|fl\.?|bldg\.?|building|room|rm\.?)\s*#?\s*[\w-]+)\s*$/i)
+  // Includes common misreads of "Suite" (Sute, Suit, Sulte, Svite, Sube).
+  const m = street.match(/^(.*?)(?:,\s*|\s+)((?:suite|su[il]?te|suit|svite|sube|ste\.?|unit|apt\.?|apartment|#|floor|fl\.?|bldg\.?|building|room|rm\.?)\s*#?\s*[\w-]*\d[\w-]*)\s*$/i)
   if (!m || !m[1].trim()) return [street, '']
-  return [m[1].trim().replace(/,$/, ''), m[2].trim()]
+  // Normalize a misread "Suite" to the real word.
+  const suite = m[2].trim().replace(/^(su[il]?te|suit|svite|sube)\b/i, 'Suite')
+  return [m[1].trim().replace(/,$/, ''), suite]
 }
 
 const TITLE_WORDS =

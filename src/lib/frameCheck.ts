@@ -60,6 +60,7 @@ export function sideCoverage(g: Gray, r: Rect, band = 0.07, threshold = 28): [nu
   const bandY = Math.max(2, Math.round(r.h * band))
   const score = (along: (t: number) => [number, number], across: [number, number], horizontalEdge: boolean, reach: number) => {
     const offsets: number[] = []
+    const signs: number[] = []
     for (let s = 1; s < samples; s++) {
       const [x0, y0] = along(s / samples)
       const vals: number[] = []
@@ -86,14 +87,27 @@ export function sideCoverage(g: Gray, r: Rect, band = 0.07, threshold = 28): [nu
         const d = k - reach
         if (vals[k] >= Math.max(threshold, best * 0.6) && Math.abs(d) < Math.abs(pick)) pick = d
       }
+      // Edge vs. line: a card edge is a step (different brightness on each side, a few pixels
+      // away); a thin line (map grid, table seam) has the same background on both sides.
+      const side = (from: number, to: number) => {
+        let sum = 0
+        for (let k = from; k <= to; k++) sum += at(g, Math.round(x0 + across[0] * (pick + k)), Math.round(y0 + across[1] * (pick + k)))
+        return sum / (to - from + 1)
+      }
+      const contrast = side(3, 6) - side(-6, -3)
+      if (Math.abs(contrast) < threshold * 0.6) continue
       offsets.push(pick)
+      signs.push(Math.sign(contrast))
     }
     if (offsets.length < 3) return 0
     const sorted = [...offsets].sort((a, b) => a - b)
     const median = sorted[sorted.length >> 1]
     // Allow a slight tilt: tolerance grows a little with the band size.
     const tol = Math.max(2, Math.round(reach * 0.25))
-    const straight = offsets.filter((d) => Math.abs(d - median) <= tol).length
+    // Along one card edge the step goes the same way (card brighter, or darker, than background).
+    const pos = signs.filter((v) => v > 0).length
+    const majority = pos >= signs.length - pos ? 1 : -1
+    const straight = offsets.filter((d, k) => Math.abs(d - median) <= tol && signs[k] === majority).length
     return straight / (samples - 1)
   }
   return [

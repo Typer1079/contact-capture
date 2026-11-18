@@ -1,24 +1,15 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { analyzeFrame, HINT_TEXT, hintFor, LIMITS, toGray, type Gray, type Hint, type Rect } from '../lib/frameCheck'
-
-export interface Verdict {
-  /** true = good enough, stop the camera. */
-  done: boolean
-  /** What to tell the person when the frame wasn't good enough. */
-  message?: string
-}
+import { analyzeFrame, sharpness, toGray, type Gray, type Hint, type Rect } from '../lib/frameCheck'
 
 interface Props {
   /**
-   * Called with a cropped photo of the card whenever the picture is sharp and steady.
-   * The scanner reads it and answers whether the text was clear enough.
+   * Called once with the captured photo (cropped to the frame, at full camera resolution).
+   * `sideways` is true when the card lay sideways in a tall frame (phone held upright).
    */
-  evaluate: (photo: Blob, progress: (p: number) => void, sideways: boolean) => Promise<Verdict>
-  /** Manual shutter: use this photo no matter what. */
-  onManual: (photo: Blob) => void
+  onCapture: (photo: Blob, sideways: boolean) => void
   onChoosePhoto: (file: File) => void
   onCancel: () => void
-  /** Camera couldn't start (no permission / not supported). */
+  /** Camera couldn't start and the person chose to use the camera app instead. */
   onUnavailable: () => void
   /** The live picture is showing (a good moment to load the text reader). */
   onReady?: () => void
@@ -26,109 +17,191 @@ interface Props {
 
 /** Card shape: between a business card (1.75) and an ID card (1.59). */
 const CARD_ASPECT = 1.65
-const ANALYSIS_WIDTH = 360
-const TICK_MS = 140
-/** Pause between attempts so the person has time to react to a message. */
-const RETRY_PAUSE_MS = 900
+const ANALYSIS_WIDTH = 320
+const TICK_MS = 120
+/** Don't auto-capture in the first moments: let the camera's autofocus start working. */
+const SETTLE_MS = 600
+/** Frames in a row that must pass before capturing (~0.25 s). */
+const STEADY_FRAMES = 2
+/** Until this long after the camera starts, also wait for the card to roughly fill the frame. */
+const FILL_PREFERRED_MS = 2500
+/**
+ * Movement is measured on a very coarse copy of the picture (blocks of 4×4 preview pixels),
+ * so hand tremor and sensor noise don't count, only real movement (sweeping the phone/card).
+ */
+const MOVING = 9
+/**
+ * Focus is judged on a full-resolution patch from the middle of the frame: a small preview
+ * can't see the slight blur that ruins small print (tested: slight blur halves this score).
+ * The score must reach this floor and be close to the best seen recently (focus has settled).
+ */
+const FOCUS_MIN = 2.5
+const FOCUS_NEAR_BEST = 0.82
+/** How much recent history "best focus" looks back over (frames, ~2 s). */
+const FOCUS_WINDOW = 16
+/** Burst: grab this many full-resolution frames and keep the sharpest. */
+const BURST = 3
+const BURST_GAP_MS = 90
+
+interface Layout {
+  /** Visible area of the camera box on screen. */
+  boxW: number
+  boxH: number
+  /** How the video is scaled/cropped to fill the box ("cover"). */
+  scale: number
+  offX: number
+  offY: number
+  /** Guide rectangle on screen. */
+  guide: Rect
+}
 
 /**
- * Guide rectangle as fractions (0–1) of the video picture.
- * By default the card's long edge runs along the picture's long edge, which gives the card
- * the most pixels: horizontal when the phone is sideways, tall when the phone is upright
- * (the card then lies sideways in the frame). `flipped` turns the frame the other way.
+ * The guide is as big as the screen allows, with the card's long edge along the screen's long
+ * edge (horizontal when the phone is sideways, tall when upright). `flipped` turns it.
  */
-function guideFractions(videoW: number, videoH: number, flipped: boolean): Rect {
-  const longWays = videoW >= videoH ? CARD_ASPECT : 1 / CARD_ASPECT
+function computeLayout(boxW: number, boxH: number, videoW: number, videoH: number, flipped: boolean): Layout {
+  const scale = Math.max(boxW / videoW, boxH / videoH)
+  const offX = (boxW - videoW * scale) / 2
+  const offY = (boxH - videoH * scale) / 2
+  const longWays = boxW >= boxH ? CARD_ASPECT : 1 / CARD_ASPECT
   const aspect = flipped ? 1 / longWays : longWays
-  let w = 0.9
-  let h = (w * videoW) / aspect / videoH
-  if (h > 0.84) {
-    h = 0.84
-    w = (h * videoH * aspect) / videoW
+  let w = boxW * 0.92
+  let h = w / aspect
+  if (h > boxH * 0.88) {
+    h = boxH * 0.88
+    w = h * aspect
   }
-  return { x: (1 - w) / 2, y: (1 - h) / 2, w, h }
+  return { boxW, boxH, scale, offX, offY, guide: { x: (boxW - w) / 2, y: (boxH - h) / 2, w, h } }
 }
 
-/** Full-resolution frame cropped to the guide (plus a small margin). */
-function cropToGuide(video: HTMLVideoElement, vertical: boolean): Promise<Blob | null> {
-  const vw = video.videoWidth
-  const vh = video.videoHeight
-  const g = guideFractions(vw, vh, vertical)
-  const m = 0.04
-  const sx = Math.max(0, (g.x - g.w * m) * vw)
-  const sy = Math.max(0, (g.y - g.h * m) * vh)
-  const sw = Math.min(vw - sx, g.w * (1 + 2 * m) * vw)
-  const sh = Math.min(vh - sy, g.h * (1 + 2 * m) * vh)
-  const canvas = document.createElement('canvas')
-  canvas.width = Math.round(sw)
-  canvas.height = Math.round(sh)
-  canvas.getContext('2d')!.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height)
-  return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.95))
+/** Guide (screen) -> rectangle in camera pixels, with a small margin, clamped to the picture. */
+function guideInVideo(l: Layout, videoW: number, videoH: number, margin = 0.04): Rect {
+  const g = l.guide
+  const x0 = Math.max(0, (g.x - g.w * margin - l.offX) / l.scale)
+  const y0 = Math.max(0, (g.y - g.h * margin - l.offY) / l.scale)
+  const x1 = Math.min(videoW, (g.x + g.w * (1 + margin) - l.offX) / l.scale)
+  const y1 = Math.min(videoH, (g.y + g.h * (1 + margin) - l.offY) / l.scale)
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
 }
 
-export default function CardCamera({ evaluate, onManual, onChoosePhoto, onCancel, onUnavailable, onReady }: Props) {
+/** Averages 4×4 blocks: a coarse picture for measuring real movement, blind to tremor and noise. */
+function coarse(g: Gray): Gray {
+  const w = Math.floor(g.width / 4)
+  const h = Math.floor(g.height / 4)
+  const data = new Uint8Array(w * h)
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      let sum = 0
+      for (let dy = 0; dy < 4; dy++) for (let dx = 0; dx < 4; dx++) sum += g.data[(y * 4 + dy) * g.width + x * 4 + dx]
+      data[y * w + x] = sum >> 4
+    }
+  return { data, width: w, height: h }
+}
+
+/** Average change between two coarse frames, ignoring an overall brightness shift (auto-exposure). */
+function coarseMotion(a: Gray, b: Gray | null, r: Rect): number {
+  if (!b || a.width !== b.width || a.height !== b.height) return 255
+  const x0 = Math.max(0, Math.round(r.x))
+  const x1 = Math.min(a.width, Math.round(r.x + r.w))
+  const y0 = Math.max(0, Math.round(r.y))
+  const y1 = Math.min(a.height, Math.round(r.y + r.h))
+  let shift = 0
+  let n = 0
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+    shift += a.data[y * a.width + x] - b.data[y * a.width + x]
+    n++
+  }
+  if (!n) return 255
+  shift /= n
+  let sum = 0
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) sum += Math.abs(a.data[y * a.width + x] - b.data[y * a.width + x] - shift)
+  return sum / n
+}
+
+/** Detail score of the middle of the guide at full camera resolution. */
+function fineFocus(video: HTMLVideoElement, r: Rect, canvas: HTMLCanvasElement): number {
+  const w = Math.min(900, Math.round(r.w * 0.5))
+  const h = Math.min(600, Math.round(r.h * 0.5))
+  if (w < 20 || h < 20) return 0
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })!
+  ctx.drawImage(video, r.x + (r.w - w) / 2, r.y + (r.h - h) / 2, w, h, 0, 0, w, h)
+  const g = toGray(ctx.getImageData(0, 0, w, h).data, w, h)
+  return sharpness(g, { x: 0, y: 0, w, h })
+}
+
+export default function CardCamera({ onCapture, onChoosePhoto, onCancel, onUnavailable, onReady }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const doneRef = useRef(false)
-  const busyRef = useRef(false)
-  const pauseUntil = useRef(0)
+  const liveSince = useRef(0)
   const [flipped, setFlipped] = useState(false)
   const [videoSize, setVideoSize] = useState({ w: 0, h: 0 })
-  const [display, setDisplay] = useState({ left: 0, top: 0, width: 0, height: 0 })
+  const [box, setBox] = useState({ w: 0, h: 0 })
   const [hint, setHint] = useState<Hint | 'starting'>('starting')
-  const [aligned, setAligned] = useState(false)
-  const [checking, setChecking] = useState<number | null>(null)
-  const [message, setMessage] = useState('')
-  const [attempts, setAttempts] = useState(0)
+  const [steady, setSteady] = useState(0)
+  const [capturing, setCapturing] = useState(false)
   const [cam, setCam] = useState<{ phase: 'requesting' | 'waiting' | 'live' | 'failed'; try: number; error?: string }>({ phase: 'requesting', try: 1 })
   /** Bump to restart the camera ("Try again"). */
   const [attempt, setAttempt] = useState(0)
+  // Hidden diagnostics: tap the status text 3 times to show live focus/movement numbers.
+  const [debug, setDebug] = useState('')
+  const debugRef = useRef(false)
+  const taps = useRef<number[]>([])
+  const tapStatus = () => {
+    const now = Date.now()
+    taps.current = [...taps.current.filter((t) => now - t < 1500), now]
+    if (taps.current.length >= 3) {
+      debugRef.current = !debugRef.current
+      setDebug(debugRef.current ? '…' : '')
+      taps.current = []
+    }
+  }
 
-  const flippedRef = useRef(flipped)
+  const layout = videoSize.w && box.w ? computeLayout(box.w, box.h, videoSize.w, videoSize.h, flipped) : null
+  const layoutRef = useRef(layout)
   useEffect(() => {
-    flippedRef.current = flipped
-  }, [flipped])
+    layoutRef.current = layout
+  })
 
   const stop = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop())
     streamRef.current = null
   }, [])
 
-  /** Take a frame and let the scanner judge it; keep the camera running if it isn't readable yet. */
-  const tryFrame = useCallback(async () => {
+  /** Burst of full-resolution frames cropped to the guide; keeps the sharpest one. */
+  const capture = useCallback(async () => {
     const video = videoRef.current
-    if (!video || doneRef.current || busyRef.current || !video.videoWidth) return
-    busyRef.current = true
-    setChecking(0)
-    try {
-      const blob = await cropToGuide(video, flippedRef.current)
-      if (!blob) return
-      // Phone upright + default frame = the card is lying sideways in the picture.
-      const sideways = video.videoHeight > video.videoWidth && !flippedRef.current
-      const verdict = await evaluate(blob, (p) => setChecking(p), sideways)
-      setAttempts((n) => n + 1)
-      if (verdict.done) {
-        doneRef.current = true
-        stop()
-      } else {
-        setMessage(verdict.message ?? '')
-        pauseUntil.current = Date.now() + RETRY_PAUSE_MS
-      }
-    } finally {
-      busyRef.current = false
-      setChecking(null)
-    }
-  }, [evaluate, stop])
-
-  const manual = useCallback(async () => {
-    const video = videoRef.current
-    if (!video || doneRef.current || !video.videoWidth) return
+    const l = layoutRef.current
+    if (!video || !l || doneRef.current || !video.videoWidth) return
     doneRef.current = true
-    const blob = await cropToGuide(video, flippedRef.current)
+    setCapturing(true)
+    const vw = video.videoWidth
+    const vh = video.videoHeight
+    const r = guideInVideo(l, vw, vh)
+    const shots: { canvas: HTMLCanvasElement; score: number }[] = []
+    const probe = document.createElement('canvas')
+    for (let i = 0; i < BURST; i++) {
+      if (i) await new Promise((res) => setTimeout(res, BURST_GAP_MS))
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.round(r.w)
+      canvas.height = Math.round(r.h)
+      canvas.getContext('2d')!.drawImage(video, r.x, r.y, r.w, r.h, 0, 0, canvas.width, canvas.height)
+      // Score sharpness on a reduced copy.
+      probe.width = 480
+      probe.height = Math.max(1, Math.round((480 * canvas.height) / canvas.width))
+      const pctx = probe.getContext('2d', { willReadFrequently: true })!
+      pctx.drawImage(canvas, 0, 0, probe.width, probe.height)
+      const g = toGray(pctx.getImageData(0, 0, probe.width, probe.height).data, probe.width, probe.height)
+      shots.push({ canvas, score: sharpness(g, { x: 0, y: 0, w: g.width, h: g.height }) })
+    }
+    const best = shots.sort((a, b) => b.score - a.score)[0].canvas
+    const sideways = l.boxH > l.boxW && !flipped
     stop()
-    if (blob) onManual(blob)
-  }, [onManual, stop])
+    best.toBlob((blob) => blob && onCapture(blob, sideways), 'image/jpeg', 0.95)
+  }, [flipped, onCapture, stop])
 
   // Start the camera as soon as the viewfinder opens. iPhones can be fussy, so: set the video
   // up the way iOS expects, try a few camera requests from best to simplest, and use a watchdog
@@ -214,7 +287,7 @@ export default function CardCamera({ evaluate, onManual, onChoosePhoto, onCancel
     return () => window.clearTimeout(t)
   }, [cam.phase, onReady])
 
-  // Track the picture's size (it flips when the phone rotates).
+  // Track the picture's size (it flips when the phone rotates) and the on-screen box size.
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
@@ -226,100 +299,138 @@ export default function CardCamera({ evaluate, onManual, onChoosePhoto, onCancel
       video.removeEventListener('resize', update)
     }
   }, [])
-
-  // Where the picture sits on screen (letterboxed to fit), so the guide lines up with it.
   useLayoutEffect(() => {
-    const box = boxRef.current
-    if (!box || !videoSize.w) return
-    const place = () => {
-      const scale = Math.min(box.clientWidth / videoSize.w, box.clientHeight / videoSize.h)
-      const width = videoSize.w * scale
-      const height = videoSize.h * scale
-      setDisplay({ left: (box.clientWidth - width) / 2, top: (box.clientHeight - height) / 2, width, height })
-    }
-    place()
-    const ro = new ResizeObserver(place)
-    ro.observe(box)
+    const el = boxRef.current
+    if (!el) return
+    const measure = () => setBox({ w: el.clientWidth, h: el.clientHeight })
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
     return () => ro.disconnect()
-  }, [videoSize])
+  }, [])
+  useEffect(() => {
+    if (cam.phase === 'live' && !liveSince.current) liveSince.current = Date.now()
+  }, [cam.phase])
 
-  // Watch frames. When sharp, steady and well lit, hand one to the text reader.
+  // Auto-capture: no text reading here, just wait until the picture is steady and the camera's
+  // own autofocus has settled (sharpness stops improving), then take the photo.
   useEffect(() => {
     if (!videoSize.w) return
     const small = document.createElement('canvas')
     const ctx = small.getContext('2d', { willReadFrequently: true })!
+    const patch = document.createElement('canvas')
     let previous: Gray | null = null
     let good = 0
-    const recent: number[] = []
+    const recentFocus: number[] = []
     const timer = window.setInterval(() => {
       const video = videoRef.current
-      if (!video || doneRef.current || !video.videoWidth) return
+      const l = layoutRef.current
+      if (!video || !l || doneRef.current || !video.videoWidth) return
       small.width = ANALYSIS_WIDTH
       small.height = Math.round((ANALYSIS_WIDTH * video.videoHeight) / video.videoWidth)
       ctx.drawImage(video, 0, 0, small.width, small.height)
       const gray = toGray(ctx.getImageData(0, 0, small.width, small.height).data, small.width, small.height)
-      const f = guideFractions(video.videoWidth, video.videoHeight, flippedRef.current)
-      const guide = { x: f.x * small.width, y: f.y * small.height, w: f.w * small.width, h: f.h * small.height }
-      const report = analyzeFrame(gray, guide, previous)
-      previous = gray
-      recent.push(report.sharpness)
-      if (recent.length > 14) recent.shift()
-      const h = hintFor(report, Math.max(...recent), false)
+      const r = guideInVideo(l, video.videoWidth, video.videoHeight, 0)
+      const k = small.width / video.videoWidth
+      const guide = { x: r.x * k, y: r.y * k, w: r.w * k, h: r.h * k }
+      const report = analyzeFrame(gray, guide, null)
+      const c = coarse(gray)
+      const motion = coarseMotion(c, previous, { x: guide.x / 4, y: guide.y / 4, w: guide.w / 4, h: guide.h / 4 })
+      previous = c
+      const focus = fineFocus(video, r, patch)
+      recentFocus.push(focus)
+      if (recentFocus.length > FOCUS_WINDOW) recentFocus.shift()
+      const best = Math.max(...recentFocus)
+      // The card roughly fills the frame. A real card edge near the frame line scores 0.85–1.0
+      // per side; busy backgrounds stay low. Only required during the first moments.
+      const filled = report.sides.filter((v) => v >= 0.6).length >= 3 || report.sides.filter((v) => v >= 0.8).length >= 2
+      const age = liveSince.current ? Date.now() - liveSince.current : 0
+
+      let h: Hint
+      if (report.brightness < 40) h = 'dark'
+      else if (motion > MOVING) h = 'steady'
+      else if (focus < FOCUS_MIN || focus < best * FOCUS_NEAR_BEST) h = 'focus'
+      else if (!filled && age < FILL_PREFERRED_MS) h = 'closer'
+      else h = 'ok'
       setHint(h)
-      setAligned(report.aligned)
-      good = h === 'ok' ? good + 1 : 0
-      if (good >= LIMITS.goodFramesNeeded && !busyRef.current && Date.now() > pauseUntil.current) {
-        good = 0
-        void tryFrame()
+      if (debugRef.current) {
+        setDebug(`focus ${focus.toFixed(1)} / best ${best.toFixed(1)} · move ${motion.toFixed(1)} · sides ${report.sides.map((v) => v.toFixed(1)).join(' ')} · light ${report.brightness.toFixed(0)}`)
       }
+      good = h === 'ok' && age > SETTLE_MS ? good + 1 : 0
+      setSteady(good)
+      if (good >= STEADY_FRAMES) void capture()
     }, TICK_MS)
     return () => window.clearInterval(timer)
-  }, [videoSize.w, tryFrame])
+  }, [videoSize.w, capture])
 
-  const g = videoSize.w ? guideFractions(videoSize.w, videoSize.h, flipped) : null
-  const portrait = videoSize.h > videoSize.w
-  // Phone upright with the default tall frame: everything is meant to be read with the phone sideways.
-  const sidewaysUi = portrait && !flipped
-
+  const sidewaysUi = box.h > box.w && !flipped
   const status =
     cam.phase === 'requesting'
       ? cam.try > 1
         ? `Retrying the camera (${cam.try}/3)…`
         : 'Asking for the camera…'
-      : cam.phase === 'waiting'
-        ? 'Starting camera…'
-        : cam.phase === 'failed'
-          ? 'Camera unavailable'
-          : hint === 'starting'
+      : cam.phase === 'failed'
+        ? 'Camera unavailable'
+        : capturing
+          ? 'Got it'
+          : hint === 'starting' || cam.phase === 'waiting'
             ? 'Starting camera…'
-      : checking !== null
-        ? 'Reading the text…'
-        : message && hint === 'ok'
-          ? message
-          : hint === 'ok'
-            ? 'Hold still…'
-            : HINT_TEXT[hint]
+            : hint === 'ok'
+              ? 'Hold still…'
+              : hint === 'steady'
+                ? 'Hold steady'
+                : hint === 'focus'
+                  ? 'Focusing…'
+                  : hint === 'dark'
+                    ? 'Too dark: find more light'
+                    : hint === 'bright'
+                      ? 'Glare: tilt the card slightly'
+                      : 'Move closer: fill the frame with the card'
+  const progress = Math.min(1, steady / STEADY_FRAMES)
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-black text-white" role="dialog" aria-label="Card camera">
-      <div className="flex items-center justify-between px-4 pb-2 pt-[max(0.75rem,env(safe-area-inset-top))]">
-        <button className="text-sm font-medium" onClick={() => { stop(); onCancel() }}>Cancel</button>
-        <span className="text-sm font-semibold">Scan card</span>
-        <button
-          className="rounded-full bg-white/15 px-3 py-1 text-xs"
-          onClick={() => {
-            setFlipped((v) => !v)
-            setMessage('')
-          }}
-          aria-pressed={flipped}
-          title="Turn the frame for a vertical badge"
-        >
-          ⟲ Rotate frame
-        </button>
-      </div>
+    <div className="fixed inset-0 z-50 flex flex-col bg-black text-white landscape:flex-row" role="dialog" aria-label="Card camera">
+      {/* Camera fills all space not used by the controls. */}
+      <div ref={boxRef} className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+        <video ref={videoRef} className="absolute inset-0 h-full w-full object-cover" playsInline muted autoPlay />
+        {layout && (
+          <div
+            className={`pointer-events-none absolute rounded-2xl border-[3px] shadow-[0_0_0_9999px_rgba(0,0,0,0.45)] transition-colors ${
+              capturing ? 'border-sky-400' : hint === 'ok' ? 'border-emerald-400' : 'border-white/90'
+            }`}
+            style={{ left: layout.guide.x, top: layout.guide.y, width: layout.guide.w, height: layout.guide.h }}
+          >
+            {progress > 0 && !capturing && (
+              <div className="absolute inset-x-0 bottom-0 h-1 origin-left bg-emerald-400" style={{ transform: `scaleX(${progress})` }} />
+            )}
+            {sidewaysUi && (
+              // On the frame's left edge, which is the bottom once the phone is turned sideways.
+              <div className="absolute inset-y-0 left-0 flex w-0 items-center justify-center">
+                <div className="w-max rotate-90 whitespace-nowrap rounded-full bg-black/70 px-4 py-1.5 text-xs font-semibold">
+                  Turn phone sideways · fill the frame with the card
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        {capturing && <div className="pointer-events-none absolute inset-0 animate-pulse bg-white/30" />}
+        {debug && (
+          <div className="pointer-events-none absolute inset-x-2 bottom-2 rounded bg-black/70 px-2 py-1 font-mono text-[10px] leading-tight text-emerald-300">{debug}</div>
+        )}
 
-      <div ref={boxRef} className="relative min-h-0 flex-1 overflow-hidden">
-        <video ref={videoRef} className="absolute inset-0 h-full w-full object-contain" playsInline muted autoPlay />
+        {/* Top bar floats over the picture so it doesn't take space. */}
+        <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/70 to-transparent px-4 pb-6 pt-[max(0.75rem,env(safe-area-inset-top))]">
+          <button className="text-sm font-medium" onClick={() => { stop(); onCancel() }}>Cancel</button>
+          <button
+            className="rounded-full bg-white/15 px-3 py-1 text-xs"
+            onClick={() => setFlipped((v) => !v)}
+            aria-pressed={flipped}
+            title="Turn the frame for a vertical badge"
+          >
+            ⟲ Rotate frame
+          </button>
+        </div>
+
         {cam.phase === 'failed' && (
           <div className="absolute inset-0 flex items-center justify-center p-6">
             <div className="w-full max-w-sm space-y-3 rounded-2xl bg-white p-4 text-sm text-slate-900">
@@ -342,47 +453,23 @@ export default function CardCamera({ evaluate, onManual, onChoosePhoto, onCancel
             </div>
           </div>
         )}
-        {g && (
-          <div className="pointer-events-none absolute" style={{ left: display.left, top: display.top, width: display.width, height: display.height }}>
-            <div
-              className={`absolute rounded-2xl border-[3px] transition-colors duration-150 shadow-[0_0_0_9999px_rgba(0,0,0,0.55)] ${
-                checking !== null ? 'border-sky-400' : aligned ? 'border-emerald-400' : 'border-white/90'
-              }`}
-              style={{ left: `${g.x * 100}%`, top: `${g.y * 100}%`, width: `${g.w * 100}%`, height: `${g.h * 100}%` }}
-            >
-              {sidewaysUi && (
-                // Sits on the frame's left edge, which is the bottom once the phone is turned sideways.
-                <div className="absolute inset-y-0 left-0 flex w-0 items-center justify-center">
-                  <div className="w-max rotate-90 whitespace-nowrap rounded-full bg-black/70 px-4 py-1.5 text-center text-xs font-semibold">
-                    {checking !== null ? 'Reading…' : 'Turn phone sideways · fill the frame with the card'}
-                  </div>
-                </div>
-              )}
-              {checking !== null && (
-                <div className="absolute inset-x-0 bottom-0 h-1 origin-left bg-sky-400 transition-transform" style={{ transform: `scaleX(${Math.max(0.05, checking)})` }} />
-              )}
-            </div>
-          </div>
-        )}
       </div>
 
-      <div className="space-y-3 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
-        <p className={`min-h-10 text-center text-sm font-medium ${checking !== null ? 'text-sky-300' : ''}`} aria-live="polite">
+      {/* Controls: a bottom bar when upright, a side column when sideways. */}
+      <div className="flex shrink-0 items-center justify-between gap-3 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 landscape:w-36 landscape:flex-col landscape:justify-center landscape:px-3 landscape:pb-3 landscape:pr-[max(0.75rem,env(safe-area-inset-right))]">
+        <label className="w-20 cursor-pointer text-xs text-white/80 underline landscape:order-3 landscape:w-auto">
+          Choose photo
+          <input type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) { stop(); onChoosePhoto(f) } }} />
+        </label>
+        <button
+          className="size-16 shrink-0 rounded-full border-4 border-white bg-white/20 active:bg-white/60 landscape:order-2"
+          onClick={() => void capture()}
+          aria-label="Take photo now"
+          disabled={!videoSize.w || capturing}
+        />
+        <p className="w-20 text-right text-xs font-medium landscape:order-1 landscape:w-auto landscape:text-center" aria-live="polite" onClick={tapStatus}>
           {status}
         </p>
-        <div className="flex items-center justify-between">
-          <label className="w-24 cursor-pointer text-xs text-white/80 underline">
-            Choose photo
-            <input type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) { stop(); onChoosePhoto(f) } }} />
-          </label>
-          <button
-            className="size-16 rounded-full border-4 border-white bg-white/20 active:bg-white/60"
-            onClick={manual}
-            aria-label="Take photo now"
-            disabled={!videoSize.w}
-          />
-          <span className="w-24 text-right text-xs text-white/60">{attempts > 0 ? `Tries: ${attempts}` : 'Auto-capture on'}</span>
-        </div>
       </div>
     </div>
   )

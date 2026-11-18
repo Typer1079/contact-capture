@@ -241,6 +241,8 @@ export async function readCard(
           best = { turns, polarity, result }
         }
         if (score >= 40) break search // plenty of clean text: this is the right way up
+        // Only try the light-text-on-dark version when this way found almost nothing.
+        if (score >= 12) break
       }
     }
     if (!best) return { turns: 0, lines: [], clarity: 0, rawText: '' }
