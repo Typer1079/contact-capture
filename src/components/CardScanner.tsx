@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { parseBusinessCard, type CardContact } from '../lib/cardParser'
+import CardCamera from './CardCamera'
 import { readCard, warmUpOcr } from '../lib/ocr'
 
 export interface IdConsent {
@@ -14,6 +15,8 @@ interface Props {
 }
 
 export default function CardScanner({ onResult, onCancel }: Props) {
+  // Opens straight into the live viewfinder; falls back to photo buttons if there's no camera.
+  const [camera, setCamera] = useState<'open' | 'closed' | 'unavailable'>('open')
   const [preview, setPreview] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState({ p: 0, label: '' })
@@ -30,8 +33,9 @@ export default function CardScanner({ onResult, onCancel }: Props) {
     if (preview) URL.revokeObjectURL(preview)
   }, [preview])
 
-  async function onPhoto(file: File | undefined) {
+  async function onPhoto(file: Blob | undefined) {
     if (!file) return
+    setCamera((c) => (c === 'unavailable' ? c : 'closed'))
     setError('')
     setPreview(URL.createObjectURL(file))
     setBusy(true)
@@ -51,6 +55,12 @@ export default function CardScanner({ onResult, onCancel }: Props) {
     } finally {
       setBusy(false)
     }
+  }
+
+  const cameraUnavailable = useCallback(() => setCamera('unavailable'), [])
+
+  if (camera === 'open') {
+    return <CardCamera onCapture={onPhoto} onChoosePhoto={onPhoto} onCancel={onCancel} onUnavailable={cameraUnavailable} />
   }
 
   if (pendingId) {
@@ -91,6 +101,7 @@ export default function CardScanner({ onResult, onCancel }: Props) {
 
   return (
     <div className="space-y-4">
+      {!preview && (
       <div className="card space-y-2 text-sm">
         <h2 className="text-base font-semibold">Scan a business card</h2>
         <p>Take a photo of the front of a business card or badge (or a driver’s license front). The text is read <strong>on this device</strong>; the photo isn’t uploaded or saved.</p>
@@ -98,11 +109,13 @@ export default function CardScanner({ onResult, onCancel }: Props) {
           <li>Lay the card flat, fill most of the photo with it</li>
           <li>Good light, no glare or shadows across the text</li>
         </ul>
+        {camera === 'unavailable' && <p className="text-amber-800">The live camera isn’t available, so use your camera app instead.</p>}
       </div>
+      )}
 
       {preview && (
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-          <img src={preview} alt="Business card photo" className="max-h-64 w-full object-contain" />
+          <img src={preview} alt="Captured card" className="max-h-72 w-full object-contain" />
         </div>
       )}
 
@@ -118,10 +131,24 @@ export default function CardScanner({ onResult, onCancel }: Props) {
       {error && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
 
       <div className="grid grid-cols-2 gap-3">
-        <label className={`btn-primary col-span-2 cursor-pointer text-center ${busy ? 'pointer-events-none opacity-50' : ''}`}>
-          {preview ? 'Retake photo' : 'Take photo of card'}
-          <input type="file" accept="image/*" capture="environment" className="hidden" disabled={busy} onChange={(e) => onPhoto(e.target.files?.[0])} />
-        </label>
+        {camera === 'unavailable' ? (
+          <label className={`btn-primary col-span-2 cursor-pointer text-center ${busy ? 'pointer-events-none opacity-50' : ''}`}>
+            {preview ? 'Retake photo' : 'Take photo of card'}
+            <input type="file" accept="image/*" capture="environment" className="hidden" disabled={busy} onChange={(e) => onPhoto(e.target.files?.[0])} />
+          </label>
+        ) : (
+          <button
+            className="btn-primary col-span-2"
+            disabled={busy}
+            onClick={() => {
+              setPreview(null)
+              setError('')
+              setCamera('open')
+            }}
+          >
+            Retake
+          </button>
+        )}
         <label className={`btn-secondary cursor-pointer text-center ${busy ? 'pointer-events-none opacity-50' : ''}`}>
           Choose photo
           <input type="file" accept="image/*" className="hidden" disabled={busy} onChange={(e) => onPhoto(e.target.files?.[0])} />

@@ -149,7 +149,7 @@ export function mergeLines(passes: ReadLine[][]): ReadLine[] {
   return out.sort((a, b) => (a.y ?? 0) - (b.y ?? 0))
 }
 
-async function loadPhoto(file: File): Promise<ImageBitmap | HTMLImageElement> {
+async function loadPhoto(file: Blob): Promise<ImageBitmap | HTMLImageElement> {
   try {
     return await createImageBitmap(file, { imageOrientation: 'from-image' })
   } catch {
@@ -175,7 +175,7 @@ async function loadPhoto(file: File): Promise<ImageBitmap | HTMLImageElement> {
  * 2. reads it a second time widened, which catches tall narrow fonts,
  * 3. merges both readings.
  */
-export async function readCard(file: File, progress?: (p: number, label: string) => void): Promise<CardLine[]> {
+export async function readCard(file: Blob, progress?: (p: number, label: string) => void): Promise<CardLine[]> {
   onProgress = progress ?? null
   const worker = await getWorker()
   const photo = await loadPhoto(file)

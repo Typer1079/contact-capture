@@ -5,7 +5,7 @@ A mobile-first web app (installable PWA) for capturing contacts and exporting th
 **This version (v0.1, test build)**
 - Sign in with email + password (Supabase Auth)
 - Type a contact by hand, or scan the PDF417 barcode on the back of a US/Canadian driver's license (consent required; keeps name, address, sex and physical description, never the license number or birth date)
-- **Scan a business card**: take a photo and on-device text recognition (Tesseract OCR) fills in name, title, company, email, phone, and address. Website, extra phone numbers, and any other text go into Notes.
+- **Scan a business card**: opens straight into a full-screen viewfinder with a card-shaped guide and live hints (move closer, hold steady, more light), then **captures automatically** once the card's edges line up and the picture is sharp, like mobile check deposit. Works upright or sideways (sideways gives sharper text), with a toggle for vertical badges. Only the card itself is read. Then and on-device text recognition (Tesseract OCR) fills in name, title, company, email, phone, and address. Website, extra phone numbers, and any other text go into Notes.
 - **Labeled addresses**: Home and Work are standard; rename a label (e.g. "Warehouse") or add more. Each has street, suite, city, state, ZIP, country.
 - **Hire date, home state, date of birth, driver's license #** fields. DOB and DL# are masked, never added to phone contacts, and only exported to CSV when you tick "Include date of birth & license number".
 - **Custom fields**: add your own fields (text, number, or date) from any contact; they appear on every contact and in the "All fields" CSV.
