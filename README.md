@@ -4,7 +4,7 @@ A mobile-first web app (installable PWA) for capturing contacts and exporting th
 
 **This version (v0.1, test build)**
 - Sign in with email + password (Supabase Auth)
-- Type a contact by hand, or scan the PDF417 barcode on the back of a US/Canadian driver's license (consent required, name and address only)
+- Type a contact by hand, or scan the PDF417 barcode on the back of a US/Canadian driver's license (consent required; keeps name, address, sex and physical description, never the license number or birth date)
 - Saved contact list with search, multi-select, and delete
 - **Add to phone**: one tap builds a vCard so iOS or Android can save it to Contacts
 - **CSV export** in three layouts: All fields, Google Contacts, Outlook
@@ -20,7 +20,7 @@ A mobile-first web app (installable PWA) for capturing contacts and exporting th
 |---|---|
 | Who can see data | Postgres **row-level security**: each user can only read and change their own rows, enforced by the database, not the app. |
 | Keys in the browser | Only Supabase's *publishable/anon* key is in the app. It's designed to be public; RLS is what protects data. The secret `service_role` key is never used. |
-| License data | Barcode is decoded **on the device** (WebAssembly, self-hosted, no CDN). The parser only reads name and address fields. License number, birth date, and physical details are never extracted, saved, or sent. |
+| License data | Barcode is decoded **on the device** (WebAssembly, self-hosted, no CDN). The parser only reads name, address, sex, height, weight, eye and hair color. License number, birth date, expiry, and document numbers are never extracted, saved, or sent. |
 | Consent | Scanning is blocked until two consent boxes are ticked. The time of consent is saved with the contact, and the database rejects license-sourced contacts without it. |
 | Cross-site scripting | Strict Content Security Policy (no inline scripts, no third-party scripts), React escaping, input length limits on the client and in the database. |
 | CSV injection | Cells starting with `= + - @` are prefixed with `'` so Excel won't run them as formulas. |
@@ -85,9 +85,16 @@ Open the site on your phone:
 - **Android (Chrome):** menu → *Install app*
 
 ### 6. Test the license scanner
-`docs/test-license-barcode.png` is a **fake** license barcode ("Test Sample", Sugar Land TX). Open it on your computer screen and scan it with the phone. You should get a prefilled form with the name and address only.
+`docs/test-license-barcode.png` is a **fake** license barcode ("Test Sample", Sugar Land TX). Open it on your computer screen and scan it with the phone. You should get a prefilled form: Test Sample, Sugar Land TX, Male, 5'10", 180 lb, brown eyes, brown hair.
 
 ---
+
+## Updating the app
+Each update comes with a list of files and where they go.
+1. **If the update includes a new `supabase/migrations/00X_….sql` file, run it first** in Supabase → SQL Editor → New query → paste → Run. (The app will fail to save until you do.)
+2. Copy each file into the folder GitHub Desktop uses (**Repository → Show in Finder**) at the path listed, replacing the old one.
+3. In GitHub Desktop: check the Changes list matches the update (and never includes `.env.local`), write a summary, **Commit to main**, **Push origin**.
+4. Wait about 2 minutes, then fully close and reopen the app on your phone.
 
 ## Project layout
 ```
@@ -99,12 +106,12 @@ src/
     ContactList.tsx        search, select, CSV export, add-to-phone, delete
     LicenseScanner.tsx     consent gate + camera/photo PDF417 scan
   lib/
-    aamva.ts               license parser (allow-list: name + address only)
+    aamva.ts               license parser (allow-list: name, address, physical description)
     barcode.ts             on-device PDF417 reader (zxing-wasm, self-hosted)
     csv.ts / vcard.ts      export formats
     contactsApi.ts         Supabase reads/writes
     validate.ts            input cleanup and validation
-supabase/migrations/       database schema + row-level security
+supabase/migrations/       database schema + row-level security (run each file once, in order)
 .github/workflows/         test + deploy to GitHub Pages
 ```
 

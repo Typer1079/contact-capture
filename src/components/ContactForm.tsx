@@ -18,6 +18,8 @@ interface FieldDef {
   autoComplete?: string
   inputMode?: 'text' | 'email' | 'tel' | 'numeric'
   half?: boolean
+  /** Shows a dropdown instead of a text box. */
+  options?: string[]
 }
 
 const FIELDS: FieldDef[] = [
@@ -32,6 +34,14 @@ const FIELDS: FieldDef[] = [
   { key: 'region', label: 'State', autoComplete: 'off', half: true },
   { key: 'postal_code', label: 'ZIP / Postal code', inputMode: 'numeric', autoComplete: 'off', half: true },
   { key: 'country', label: 'Country', autoComplete: 'off', half: true },
+]
+
+const PHYSICAL: FieldDef[] = [
+  { key: 'sex', label: 'Sex', half: true, options: ['', 'Male', 'Female', 'X'] },
+  { key: 'height', label: 'Height', autoComplete: 'off', half: true },
+  { key: 'weight', label: 'Weight', autoComplete: 'off', half: true },
+  { key: 'eye_color', label: 'Eye color', autoComplete: 'off', half: true },
+  { key: 'hair_color', label: 'Hair color', autoComplete: 'off', half: true },
 ]
 
 export default function ContactForm({ initial, autoFilled = [], isEdit, onSave, onCancel }: Props) {
@@ -57,36 +67,50 @@ export default function ContactForm({ initial, autoFilled = [], isEdit, onSave, 
     }
   }
 
+  function renderField(f: FieldDef) {
+    const highlighted = autoFilled.includes(f.key) && draft[f.key] === initial[f.key] && draft[f.key] !== ''
+    const cls = `input ${highlighted ? 'border-amber-400 bg-amber-50' : ''} ${errors[f.key] ? 'border-red-500' : ''}`
+    return (
+      <div key={f.key} className={f.half ? 'col-span-1' : 'col-span-2'}>
+        <label className="label" htmlFor={f.key}>{f.label}</label>
+        {f.options ? (
+          <select id={f.key} className={cls} value={draft[f.key]} onChange={(e) => set(f.key, e.target.value)}>
+            {/* Keep an unexpected saved value selectable instead of silently dropping it. */}
+            {[...new Set([...f.options, draft[f.key]])].map((o) => (
+              <option key={o} value={o}>{o || '—'}</option>
+            ))}
+          </select>
+        ) : (
+          <input
+            id={f.key}
+            className={cls}
+            type={f.type ?? 'text'}
+            inputMode={f.inputMode}
+            autoComplete={f.autoComplete}
+            maxLength={MAX_LENGTH[f.key]}
+            value={draft[f.key]}
+            onChange={(e) => set(f.key, e.target.value)}
+            aria-invalid={Boolean(errors[f.key])}
+          />
+        )}
+        {errors[f.key] && <p className="mt-1 text-xs text-red-600">{errors[f.key]}</p>}
+      </div>
+    )
+  }
+
   return (
     <form onSubmit={submit} className="space-y-4" noValidate>
       {draft.source === 'license' && autoFilled.length > 0 && (
         <div className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">
-          Filled from a license barcode. Highlighted fields need a quick check. Only the name and address were kept;
-          the license number, birth date and physical details were discarded.
+          Filled from a license barcode. Highlighted fields need a quick check. The license number and birth date were
+          discarded and are never saved.
         </div>
       )}
 
       <div className="grid grid-cols-2 gap-3">
-        {FIELDS.map((f) => {
-          const highlighted = autoFilled.includes(f.key) && draft[f.key] === initial[f.key] && draft[f.key] !== ''
-          return (
-            <div key={f.key} className={f.half ? 'col-span-1' : 'col-span-2'}>
-              <label className="label" htmlFor={f.key}>{f.label}</label>
-              <input
-                id={f.key}
-                className={`input ${highlighted ? 'border-amber-400 bg-amber-50' : ''} ${errors[f.key] ? 'border-red-500' : ''}`}
-                type={f.type ?? 'text'}
-                inputMode={f.inputMode}
-                autoComplete={f.autoComplete}
-                maxLength={MAX_LENGTH[f.key]}
-                value={draft[f.key]}
-                onChange={(e) => set(f.key, e.target.value)}
-                aria-invalid={Boolean(errors[f.key])}
-              />
-              {errors[f.key] && <p className="mt-1 text-xs text-red-600">{errors[f.key]}</p>}
-            </div>
-          )
-        })}
+        {FIELDS.map(renderField)}
+        <h2 className="col-span-2 mt-2 border-t border-slate-200 pt-4 text-sm font-semibold text-slate-700">Physical description</h2>
+        {PHYSICAL.map(renderField)}
         <div className="col-span-2">
           <label className="label" htmlFor="notes">Notes</label>
           <textarea

@@ -22,7 +22,7 @@ const SAMPLE = [
 ].join('\n')
 
 describe('parseAamva', () => {
-  it('extracts name and address', () => {
+  it('extracts name, address and physical description', () => {
     expect(parseAamva(SAMPLE)).toEqual({
       first_name: 'Jane',
       last_name: 'McDonald',
@@ -31,15 +31,30 @@ describe('parseAamva', () => {
       region: 'TX',
       postal_code: '77479',
       country: 'USA',
+      sex: 'Female',
+      height: `5'5"`,
+      weight: '',
+      eye_color: 'Brown',
+      hair_color: '',
     })
   })
 
-  it('never returns license number, birth date, or physical details', () => {
+  it('reads weight and hair color when present', () => {
+    const r = parseAamva(SAMPLE + '\nDAW145\nDAZBLN')
+    expect(r).toMatchObject({ weight: '145 lb', hair_color: 'Blond' })
+  })
+
+  it('handles metric height and a weight range', () => {
+    const r = parseAamva(SAMPLE.replace('DAU065 IN', 'DAU178 CM') + '\nDCE3')
+    expect(r).toMatchObject({ height: '178 cm', weight: '131–160 lb' })
+  })
+
+  it('never returns license number, birth date, or expiry', () => {
     const out = JSON.stringify(parseAamva(SAMPLE))
     expect(out).not.toContain('12345678')
     expect(out).not.toContain('01151990')
-    expect(out).not.toContain('BRO')
-    expect(out).not.toContain('065')
+    expect(out).not.toContain('01152030')
+    expect(Object.keys(parseAamva(SAMPLE)!)).not.toContain('license_number')
   })
 
   it('formats ZIP+4', () => {

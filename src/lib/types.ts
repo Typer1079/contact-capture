@@ -12,6 +12,11 @@ export interface ContactDraft {
   region: string
   postal_code: string
   country: string
+  sex: string
+  height: string
+  weight: string
+  eye_color: string
+  hair_color: string
   notes: string
   source: ContactSource
   consent_at: string | null
@@ -35,6 +40,11 @@ export const TEXT_FIELDS = [
   'region',
   'postal_code',
   'country',
+  'sex',
+  'height',
+  'weight',
+  'eye_color',
+  'hair_color',
   'notes',
 ] as const satisfies readonly (keyof ContactDraft)[]
 
@@ -52,6 +62,11 @@ export const MAX_LENGTH: Record<TextField, number> = {
   region: 100,
   postal_code: 20,
   country: 100,
+  sex: 20,
+  height: 20,
+  weight: 20,
+  eye_color: 30,
+  hair_color: 30,
   notes: 2000,
 }
 
@@ -68,6 +83,11 @@ export function emptyDraft(source: ContactSource = 'manual'): ContactDraft {
     region: '',
     postal_code: '',
     country: '',
+    sex: '',
+    height: '',
+    weight: '',
+    eye_color: '',
+    hair_color: '',
     notes: '',
     source,
     consent_at: null,

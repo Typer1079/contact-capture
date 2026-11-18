@@ -135,12 +135,12 @@ export default function LicenseScanner({ onResult, onCancel }: Props) {
         <div className="card space-y-3 text-sm">
           <h2 className="text-base font-semibold">Before you scan</h2>
           <p>
-            The barcode is read <strong>on this device</strong>. Only the person’s <strong>name and address</strong> are kept. The license
-            number, birth date and physical details are discarded right away and never saved or sent anywhere.
+            The barcode is read <strong>on this device</strong>. Only the person’s <strong>name, address, sex and physical description</strong> (height,
+            weight, eye and hair color) are kept. The license number and birth date are discarded right away and never saved or sent anywhere.
           </p>
           <label className="flex items-start gap-3">
             <input type="checkbox" className="mt-0.5 size-5 shrink-0" checked={requested} onChange={(e) => setRequested(e.target.checked)} />
-            <span>The license holder voluntarily asked me to scan their license and agreed to me saving their name and address.</span>
+            <span>The license holder voluntarily asked me to scan their license and agreed to me saving their name, address, sex and physical description.</span>
           </label>
           <label className="flex items-start gap-3">
             <input type="checkbox" className="mt-0.5 size-5 shrink-0" checked={personalUse} onChange={(e) => setPersonalUse(e.target.checked)} />

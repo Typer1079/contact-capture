@@ -118,7 +118,7 @@ export default function App() {
               <span className="flex size-12 items-center justify-center rounded-xl bg-slate-900 text-xl text-white" aria-hidden>▤</span>
               <span>
                 <span className="block font-semibold">Scan license</span>
-                <span className="block text-sm text-slate-500">With the holder’s consent · name & address only</span>
+                <span className="block text-sm text-slate-500">With the holder’s consent · no license number or birth date</span>
               </span>
             </button>
             <button className="card flex w-full items-center gap-4 text-left hover:bg-slate-50" onClick={() => setView({ name: 'form', draft: emptyDraft() })}>
@@ -138,7 +138,7 @@ export default function App() {
             <button className="btn-secondary w-full" onClick={() => setView({ name: 'list' })}>
               Saved contacts ({contacts.length})
             </button>
-            <p className="pt-2 text-center text-xs text-slate-400">Test version · no CRM sync · license data never leaves this device except name & address you save</p>
+            <p className="pt-2 text-center text-xs text-slate-400">Test version · no CRM sync · license number and birth date are never saved</p>
           </div>
         )}
 
