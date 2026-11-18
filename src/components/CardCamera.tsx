@@ -13,13 +13,15 @@ interface Props {
    * Called with a cropped photo of the card whenever the picture is sharp and steady.
    * The scanner reads it and answers whether the text was clear enough.
    */
-  evaluate: (photo: Blob, progress: (p: number) => void) => Promise<Verdict>
+  evaluate: (photo: Blob, progress: (p: number) => void, sideways: boolean) => Promise<Verdict>
   /** Manual shutter: use this photo no matter what. */
   onManual: (photo: Blob) => void
   onChoosePhoto: (file: File) => void
   onCancel: () => void
   /** Camera couldn't start (no permission / not supported). */
   onUnavailable: () => void
+  /** The live picture is showing (a good moment to load the text reader). */
+  onReady?: () => void
 }
 
 /** Card shape: between a business card (1.75) and an ID card (1.59). */
@@ -29,13 +31,19 @@ const TICK_MS = 140
 /** Pause between attempts so the person has time to react to a message. */
 const RETRY_PAUSE_MS = 900
 
-/** Guide rectangle as fractions (0–1) of the video picture. */
-function guideFractions(videoW: number, videoH: number, vertical: boolean): Rect {
-  const aspect = vertical ? 1 / CARD_ASPECT : CARD_ASPECT
+/**
+ * Guide rectangle as fractions (0–1) of the video picture.
+ * By default the card's long edge runs along the picture's long edge, which gives the card
+ * the most pixels: horizontal when the phone is sideways, tall when the phone is upright
+ * (the card then lies sideways in the frame). `flipped` turns the frame the other way.
+ */
+function guideFractions(videoW: number, videoH: number, flipped: boolean): Rect {
+  const longWays = videoW >= videoH ? CARD_ASPECT : 1 / CARD_ASPECT
+  const aspect = flipped ? 1 / longWays : longWays
   let w = 0.9
   let h = (w * videoW) / aspect / videoH
-  if (h > 0.8) {
-    h = 0.8
+  if (h > 0.84) {
+    h = 0.84
     w = (h * videoH * aspect) / videoW
   }
   return { x: (1 - w) / 2, y: (1 - h) / 2, w, h }
@@ -58,14 +66,14 @@ function cropToGuide(video: HTMLVideoElement, vertical: boolean): Promise<Blob |
   return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.95))
 }
 
-export default function CardCamera({ evaluate, onManual, onChoosePhoto, onCancel, onUnavailable }: Props) {
+export default function CardCamera({ evaluate, onManual, onChoosePhoto, onCancel, onUnavailable, onReady }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const doneRef = useRef(false)
   const busyRef = useRef(false)
   const pauseUntil = useRef(0)
-  const [vertical, setVertical] = useState(false)
+  const [flipped, setFlipped] = useState(false)
   const [videoSize, setVideoSize] = useState({ w: 0, h: 0 })
   const [display, setDisplay] = useState({ left: 0, top: 0, width: 0, height: 0 })
   const [hint, setHint] = useState<Hint | 'starting'>('starting')
@@ -74,10 +82,10 @@ export default function CardCamera({ evaluate, onManual, onChoosePhoto, onCancel
   const [message, setMessage] = useState('')
   const [attempts, setAttempts] = useState(0)
 
-  const verticalRef = useRef(vertical)
+  const flippedRef = useRef(flipped)
   useEffect(() => {
-    verticalRef.current = vertical
-  }, [vertical])
+    flippedRef.current = flipped
+  }, [flipped])
 
   const stop = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop())
@@ -91,9 +99,11 @@ export default function CardCamera({ evaluate, onManual, onChoosePhoto, onCancel
     busyRef.current = true
     setChecking(0)
     try {
-      const blob = await cropToGuide(video, verticalRef.current)
+      const blob = await cropToGuide(video, flippedRef.current)
       if (!blob) return
-      const verdict = await evaluate(blob, (p) => setChecking(p))
+      // Phone upright + default frame = the card is lying sideways in the picture.
+      const sideways = video.videoHeight > video.videoWidth && !flippedRef.current
+      const verdict = await evaluate(blob, (p) => setChecking(p), sideways)
       setAttempts((n) => n + 1)
       if (verdict.done) {
         doneRef.current = true
@@ -112,7 +122,7 @@ export default function CardCamera({ evaluate, onManual, onChoosePhoto, onCancel
     const video = videoRef.current
     if (!video || doneRef.current || !video.videoWidth) return
     doneRef.current = true
-    const blob = await cropToGuide(video, verticalRef.current)
+    const blob = await cropToGuide(video, flippedRef.current)
     stop()
     if (blob) onManual(blob)
   }, [onManual, stop])
@@ -123,7 +133,10 @@ export default function CardCamera({ evaluate, onManual, onChoosePhoto, onCancel
     ;(async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 } },
+          // ~1920 px on the long side starts much faster than 4K on phones, and with the card along
+          // the long edge it still gives ~1,600 pixels across the card. Same ideal for width and
+          // height so the camera keeps its natural shape in either orientation.
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1920 } },
           audio: false,
         })
         if (cancelled) return stream.getTracks().forEach((t) => t.stop())
@@ -133,6 +146,8 @@ export default function CardCamera({ evaluate, onManual, onChoosePhoto, onCancel
         const video = videoRef.current!
         video.srcObject = stream
         await video.play()
+        // Load the text reader only once the picture is up, so it doesn't slow the camera start.
+        if (!cancelled) window.setTimeout(() => onReady?.(), 250)
       } catch {
         if (!cancelled) onUnavailable()
       }
@@ -141,7 +156,7 @@ export default function CardCamera({ evaluate, onManual, onChoosePhoto, onCancel
       cancelled = true
       stop()
     }
-  }, [onUnavailable, stop])
+  }, [onUnavailable, onReady, stop])
 
   // Track the picture's size (it flips when the phone rotates).
   useEffect(() => {
@@ -187,7 +202,7 @@ export default function CardCamera({ evaluate, onManual, onChoosePhoto, onCancel
       small.height = Math.round((ANALYSIS_WIDTH * video.videoHeight) / video.videoWidth)
       ctx.drawImage(video, 0, 0, small.width, small.height)
       const gray = toGray(ctx.getImageData(0, 0, small.width, small.height).data, small.width, small.height)
-      const f = guideFractions(video.videoWidth, video.videoHeight, verticalRef.current)
+      const f = guideFractions(video.videoWidth, video.videoHeight, flippedRef.current)
       const guide = { x: f.x * small.width, y: f.y * small.height, w: f.w * small.width, h: f.h * small.height }
       const report = analyzeFrame(gray, guide, previous)
       previous = gray
@@ -205,10 +220,10 @@ export default function CardCamera({ evaluate, onManual, onChoosePhoto, onCancel
     return () => window.clearInterval(timer)
   }, [videoSize.w, tryFrame])
 
-  const g = videoSize.w ? guideFractions(videoSize.w, videoSize.h, vertical) : null
+  const g = videoSize.w ? guideFractions(videoSize.w, videoSize.h, flipped) : null
   const portrait = videoSize.h > videoSize.w
-  // Holding the phone upright makes a horizontal card small in the picture.
-  const suggestSideways = portrait && !vertical
+  // Phone upright with the default tall frame: everything is meant to be read with the phone sideways.
+  const sidewaysUi = portrait && !flipped
 
   const status =
     hint === 'starting'
@@ -229,24 +244,15 @@ export default function CardCamera({ evaluate, onManual, onChoosePhoto, onCancel
         <button
           className="rounded-full bg-white/15 px-3 py-1 text-xs"
           onClick={() => {
-            setVertical((v) => !v)
+            setFlipped((v) => !v)
             setMessage('')
           }}
-          aria-pressed={vertical}
+          aria-pressed={flipped}
+          title="Turn the frame for a vertical badge"
         >
-          {vertical ? 'Vertical card' : 'Horizontal card'}
+          ⟲ Rotate frame
         </button>
       </div>
-
-      {suggestSideways && (
-        <div className="mx-4 mb-2 flex items-center gap-3 rounded-xl bg-amber-400 px-3 py-2 text-slate-900" role="note">
-          <span className="inline-block animate-tilt text-2xl" aria-hidden>📱</span>
-          <span className="text-sm font-semibold leading-tight">
-            Turn your phone sideways
-            <span className="block text-xs font-normal">The card fills twice as much of the picture, so small text reads correctly.</span>
-          </span>
-        </div>
-      )}
 
       <div ref={boxRef} className="relative min-h-0 flex-1 overflow-hidden">
         <video ref={videoRef} className="absolute inset-0 h-full w-full object-contain" playsInline muted autoPlay />
@@ -258,6 +264,14 @@ export default function CardCamera({ evaluate, onManual, onChoosePhoto, onCancel
               }`}
               style={{ left: `${g.x * 100}%`, top: `${g.y * 100}%`, width: `${g.w * 100}%`, height: `${g.h * 100}%` }}
             >
+              {sidewaysUi && (
+                // Sits on the frame's left edge, which is the bottom once the phone is turned sideways.
+                <div className="absolute inset-y-0 left-0 flex w-0 items-center justify-center">
+                  <div className="w-max rotate-90 whitespace-nowrap rounded-full bg-black/70 px-4 py-1.5 text-center text-xs font-semibold">
+                    {checking !== null ? 'Reading…' : 'Turn phone sideways · fill the frame with the card'}
+                  </div>
+                </div>
+              )}
               {checking !== null && (
                 <div className="absolute inset-x-0 bottom-0 h-1 origin-left bg-sky-400 transition-transform" style={{ transform: `scaleX(${Math.max(0.05, checking)})` }} />
               )}

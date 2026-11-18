@@ -108,6 +108,7 @@ export interface ReadLine extends CardLine {
 export function linesFromResult(
   data: TesseractData,
   imageHeight: number,
+  imageWidth = 0,
 ): { lines: ReadLine[]; confidence: number; words: number; clarity: number } {
   const raw: TesseractLine[] = []
   for (const b of data.blocks ?? []) for (const p of b.paragraphs) for (const l of p.lines) raw.push(l)
@@ -115,11 +116,17 @@ export function linesFromResult(
   const kept = raw.filter((l) => l.confidence >= 50 && l.text.trim())
   // Clarity counts ALL text found, including lines too small or blurry to read well,
   // so tiny unreadable print pulls the score down instead of being silently skipped.
+  // Text whose middle sits in the outer 6% of the photo is background around the card, not the card.
+  const nearEdge = (l: TesseractLine) => {
+    const cx = (l.bbox.x0 + l.bbox.x1) / 2
+    const cy = (l.bbox.y0 + l.bbox.y1) / 2
+    return imageWidth > 0 && (cx < imageWidth * 0.06 || cx > imageWidth * 0.94 || cy < imageHeight * 0.06 || cy > imageHeight * 0.94)
+  }
   let sum = 0
   let n = 0
   for (const l of raw) {
     const len = l.text.replace(/[^A-Za-z0-9@]/g, '').length
-    if (len < 3) continue
+    if (len < 3 || nearEdge(l)) continue
     sum += l.confidence * len
     n += len
   }
@@ -184,6 +191,8 @@ async function loadPhoto(file: Blob): Promise<ImageBitmap | HTMLImageElement> {
 }
 
 export interface CardReading {
+  /** Quarter-turns that made the text upright (0 = as photographed). */
+  turns: number
   lines: ReadLine[]
   /** How clearly the text was read: confidence 0–100 over all text found (see linesFromResult). */
   clarity: number
@@ -200,7 +209,11 @@ export interface CardReading {
 export async function readCard(
   file: Blob,
   progress?: (p: number, label: string) => void,
-  opts: { quick?: boolean } = {},
+  opts: {
+    quick?: boolean
+    /** Rotations to try, best guess first (quarter-turns clockwise). */
+    turnOrder?: number[]
+  } = {},
 ): Promise<CardReading> {
   onProgress = progress ?? null
   const worker = await getWorker()
@@ -208,7 +221,7 @@ export async function readCard(
   const run = async (turns: number, maxDim: number, stretch: number, polarity: 1 | -1) => {
     const canvas = preprocess(photo, turns, maxDim, stretch, polarity)
     const { data } = await worker.recognize(canvas, {}, { blocks: true, text: true })
-    return { ...linesFromResult(data as unknown as TesseractData, canvas.height), rawText: (data as { text?: string }).text ?? '' }
+    return { ...linesFromResult(data as unknown as TesseractData, canvas.height, canvas.width), rawText: (data as { text?: string }).text ?? '' }
   }
   try {
     let best: { turns: number; polarity: 1 | -1; result: Awaited<ReturnType<typeof run>> } | null = null
@@ -217,8 +230,9 @@ export async function readCard(
       r.lines.reduce((sum, l) => sum + l.confidence * l.text.replace(/[^A-Za-z0-9]/g, '').length, 0) / 100
     let bestScore = -1
     // Try each way up, and dark-on-light then light-on-dark, until one reads cleanly.
-    // Quick check (used while the camera is live): the card is already upright in the guide.
-    search: for (const turns of opts.quick ? [0] : [0, 1, 3, 2]) {
+    // Quick check (used while the camera is live) tries only the likely rotations.
+    const order = opts.turnOrder ?? [0, 1, 3, 2]
+    search: for (const turns of opts.quick ? order.slice(0, 3) : [...new Set([...order, 0, 1, 3, 2])]) {
       for (const polarity of [1, -1] as const) {
         const result = await run(turns, 1600, 1, polarity)
         const score = quality(result)
@@ -229,10 +243,15 @@ export async function readCard(
         if (score >= 40) break search // plenty of clean text: this is the right way up
       }
     }
-    if (!best) return { lines: [], clarity: 0, rawText: '' }
-    if (opts.quick) return { lines: best.result.lines, clarity: best.result.clarity, rawText: best.result.rawText }
+    if (!best) return { turns: 0, lines: [], clarity: 0, rawText: '' }
+    if (opts.quick) return { turns: best.turns, lines: best.result.lines, clarity: best.result.clarity, rawText: best.result.rawText }
     const wide = await run(best.turns, 1200, 1.6, best.polarity)
-    return { lines: mergeLines([best.result.lines, wide.lines]), clarity: best.result.clarity, rawText: best.result.rawText + '\n' + wide.rawText }
+    return {
+      turns: best.turns,
+      lines: mergeLines([best.result.lines, wide.lines]),
+      clarity: best.result.clarity,
+      rawText: best.result.rawText + '\n' + wide.rawText,
+    }
   } finally {
     if ('close' in photo) photo.close()
     onProgress = null

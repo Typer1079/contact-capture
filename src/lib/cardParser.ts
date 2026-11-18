@@ -119,7 +119,7 @@ function formatPhone(m: RegExpExecArray): string {
 function repairLine(t: string): string {
   return t
     .replace(/[|]/g, ' ')
-    .replace(/\s*@\s*/g, '@')
+    .replace(/\s*[([{<]?\s*@\s*[)\]}>]?\s*/g, '@') // "name(@domain" / "name @ domain" -> "name@domain"
     .replace(/\s*\(at\)\s*/gi, '@')
     .replace(/(@[\w-]+)\s*\.\s*(com|net|org|io|co|us|biz|edu|gov)\b/gi, '$1.$2')
     .replace(/(www\.[\w-]+)\s+\.\s*(com|net|org|io|co|us|biz|edu|gov)\b/gi, '$1.$2')

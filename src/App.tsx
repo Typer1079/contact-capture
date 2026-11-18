@@ -12,10 +12,12 @@ import { isConfigured, supabase } from './lib/supabase'
 import { emptyAddress, emptyDraft, isBlankAddress, type Contact, type ContactDraft, type CustomFieldDef } from './lib/types'
 import { toVCard, vcardFileName } from './lib/vcard'
 
-// The barcode reader (WebAssembly) only downloads when someone opens the scanner.
+// The scanners load separately from the main app. The card scanner's screen is fetched in the
+// background shortly after sign-in so the camera opens instantly when tapped; the large text
+// reader itself still only downloads once the camera is showing.
+const loadCardScanner = () => import('./components/CardScanner')
 const LicenseScanner = lazy(() => import('./components/LicenseScanner'))
-// Same for the text reader used on business cards.
-const CardScanner = lazy(() => import('./components/CardScanner'))
+const CardScanner = lazy(loadCardScanner)
 
 type View =
   | { name: 'home' }
@@ -93,6 +95,12 @@ export default function App() {
   useEffect(() => {
     if (session) refresh()
   }, [session, refresh])
+
+  useEffect(() => {
+    if (!session) return
+    const t = window.setTimeout(() => void loadCardScanner().catch(() => {}), 1200)
+    return () => window.clearTimeout(t)
+  }, [session])
 
   useEffect(() => {
     if (!toast) return

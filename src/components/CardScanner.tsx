@@ -63,8 +63,8 @@ export default function CardScanner({ onResult, onCancel }: Props) {
   const [includeSensitive, setIncludeSensitive] = useState(false)
   const readings = useRef<Reading[]>([])
 
-  // Start loading the text reader while the person lines up the card.
-  useEffect(() => warmUpOcr(), [])
+  // Which way up the text was last time (cards are usually held the same way for every try).
+  const turnsRef = useRef<number | null>(null)
   useEffect(() => () => {
     if (preview) URL.revokeObjectURL(preview)
   }, [preview])
@@ -78,7 +78,9 @@ export default function CardScanner({ onResult, onCancel }: Props) {
       setError('')
       setProgress({ p: 0, label: 'Checking the details…' })
       try {
-        const { lines } = await readCard(best.photo, (p) => setProgress({ p, label: 'Checking the details…' }))
+        const { lines } = await readCard(best.photo, (p) => setProgress({ p, label: 'Checking the details…' }), {
+          turnOrder: turnsRef.current !== null ? [turnsRef.current] : undefined,
+        })
         const careful = parseBusinessCard(lines)
         // Vote across readings: the careful one (counts double) plus the other clear quick ones.
         const quick = [best, ...others].filter((r) => r.clarity >= CLEAR && r.lines.length).map((r) => r.contact)
@@ -104,8 +106,12 @@ export default function CardScanner({ onResult, onCancel }: Props) {
 
   /** Live camera: quick-read a frame and decide whether the text is clear enough. */
   const evaluate = useCallback(
-    async (photo: Blob, report: (p: number) => void): Promise<Verdict> => {
-      const { lines, clarity, rawText } = await readCard(photo, (p) => report(p), { quick: true })
+    async (photo: Blob, report: (p: number) => void, sideways: boolean): Promise<Verdict> => {
+      // A card lying sideways in a tall frame reads after a quarter turn (either way).
+      const guess = sideways ? [1, 3, 0] : [0]
+      const turnOrder = turnsRef.current !== null ? [turnsRef.current, ...guess.filter((t) => t !== turnsRef.current)] : guess
+      const { lines, clarity, rawText, turns } = await readCard(photo, (p) => report(p), { quick: true, turnOrder })
+      if (clarity >= CLEAR) turnsRef.current = turns
       const contact = parseBusinessCard(lines)
       const reading: Reading = { photo, lines, contact, clarity, hasKeyFields: hasKeyFields(contact, rawText) }
       readings.current.push(reading)
@@ -139,7 +145,16 @@ export default function CardScanner({ onResult, onCancel }: Props) {
   const cameraUnavailable = useCallback(() => setCamera('unavailable'), [])
 
   if (camera === 'open') {
-    return <CardCamera evaluate={evaluate} onManual={single} onChoosePhoto={single} onCancel={onCancel} onUnavailable={cameraUnavailable} />
+    return (
+      <CardCamera
+        evaluate={evaluate}
+        onManual={single}
+        onChoosePhoto={single}
+        onCancel={onCancel}
+        onUnavailable={cameraUnavailable}
+        onReady={warmUpOcr}
+      />
+    )
   }
 
   if (pendingId) {
@@ -227,6 +242,7 @@ export default function CardScanner({ onResult, onCancel }: Props) {
             disabled={busy}
             onClick={() => {
               readings.current = []
+              turnsRef.current = null
               setPreview(null)
               setError('')
               setCamera('open')

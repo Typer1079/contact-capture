@@ -77,6 +77,10 @@ describe('parseBusinessCard', () => {
     expect(short).toMatchObject({ city: 'Maple Grove', postal_code: '5531' })
   })
 
+  it('removes stray brackets around the @ in an email', () => {
+    expect(parseBusinessCard(L(['Pat Kim', 30], 'pat.kim(@kimco.com')).email).toBe('pat.kim@kimco.com')
+  })
+
   it('finishes a company name cut short, using the email domain', () => {
     const r = parseBusinessCard(L(['Pat Kim', 30], 'pat.kim@guardianrfid.com', 'GUARDIAN RFI'))
     expect(r.company).toBe('Guardian RFID')
