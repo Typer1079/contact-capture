@@ -81,6 +81,9 @@ export default function CardCamera({ evaluate, onManual, onChoosePhoto, onCancel
   const [checking, setChecking] = useState<number | null>(null)
   const [message, setMessage] = useState('')
   const [attempts, setAttempts] = useState(0)
+  const [cam, setCam] = useState<{ phase: 'requesting' | 'waiting' | 'live' | 'failed'; try: number; error?: string }>({ phase: 'requesting', try: 1 })
+  /** Bump to restart the camera ("Try again"). */
+  const [attempt, setAttempt] = useState(0)
 
   const flippedRef = useRef(flipped)
   useEffect(() => {
@@ -127,36 +130,89 @@ export default function CardCamera({ evaluate, onManual, onChoosePhoto, onCancel
     if (blob) onManual(blob)
   }, [onManual, stop])
 
-  // Start the camera as soon as the viewfinder opens.
+  // Start the camera as soon as the viewfinder opens. iPhones can be fussy, so: set the video
+  // up the way iOS expects, try a few camera requests from best to simplest, and use a watchdog
+  // in case a camera "starts" but never sends a picture.
   useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
     let cancelled = false
-    ;(async () => {
+    let watchdog: number | undefined
+    video.muted = true
+    video.setAttribute('muted', '')
+    video.setAttribute('playsinline', '')
+    video.setAttribute('webkit-playsinline', '')
+
+    const requests: MediaStreamConstraints[] = [
+      // Same request the license scanner uses (known to work on iPhone); iOS turns it to
+      // 1080x1920 when the phone is upright.
+      { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false },
+      { video: { facingMode: 'environment' }, audio: false },
+      { video: true, audio: false },
+    ]
+
+    const start = async (i: number): Promise<void> => {
+      window.clearTimeout(watchdog)
+      stop()
+      setCam({ phase: 'requesting', try: i + 1 })
+      let stream: MediaStream
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          // ~1920 px on the long side starts much faster than 4K on phones, and with the card along
-          // the long edge it still gives ~1,600 pixels across the card. Same ideal for width and
-          // height so the camera keeps its natural shape in either orientation.
-          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1920 } },
-          audio: false,
-        })
-        if (cancelled) return stream.getTracks().forEach((t) => t.stop())
-        streamRef.current = stream
-        const track = stream.getVideoTracks()[0]
-        track?.applyConstraints({ advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet] }).catch(() => {})
-        const video = videoRef.current!
-        video.srcObject = stream
-        await video.play()
-        // Load the text reader only once the picture is up, so it doesn't slow the camera start.
-        if (!cancelled) window.setTimeout(() => onReady?.(), 250)
-      } catch {
-        if (!cancelled) onUnavailable()
+        stream = await navigator.mediaDevices.getUserMedia(requests[i])
+      } catch (err) {
+        if (cancelled) return
+        const e = err as DOMException
+        if (e?.name === 'NotAllowedError' || e?.name === 'SecurityError') {
+          setCam({ phase: 'failed', try: i + 1, error: 'denied' })
+          return
+        }
+        if (i + 1 < requests.length) return start(i + 1)
+        setCam({ phase: 'failed', try: i + 1, error: `${e?.name ?? 'Error'}: ${e?.message ?? 'camera unavailable'}` })
+        return
       }
-    })()
+      if (cancelled) {
+        stream.getTracks().forEach((t) => t.stop())
+        return
+      }
+      streamRef.current = stream
+      setCam({ phase: 'waiting', try: i + 1 })
+      video.srcObject = stream
+      watchdog = window.setTimeout(() => {
+        if (cancelled || video.videoWidth) return
+        if (i + 1 < requests.length) void start(i + 1)
+        else setCam({ phase: 'failed', try: i + 1, error: 'The camera turned on but sent no picture.' })
+      }, 4000)
+      try {
+        await video.play()
+      } catch {
+        // A play() hiccup doesn't always mean failure; the watchdog decides.
+      }
+    }
+
+    const live = () => {
+      if (!video.videoWidth || cancelled) return
+      window.clearTimeout(watchdog)
+      setCam((c) => (c.phase === 'live' ? c : { phase: 'live', try: c.try }))
+    }
+    video.addEventListener('loadeddata', live)
+    video.addEventListener('playing', live)
+    video.addEventListener('resize', live)
+    void start(0)
     return () => {
       cancelled = true
+      window.clearTimeout(watchdog)
+      video.removeEventListener('loadeddata', live)
+      video.removeEventListener('playing', live)
+      video.removeEventListener('resize', live)
       stop()
     }
-  }, [onUnavailable, onReady, stop])
+  }, [attempt, stop])
+
+  // Load the text reader only once the picture is live, so it doesn't slow the camera start.
+  useEffect(() => {
+    if (cam.phase !== 'live') return
+    const t = window.setTimeout(() => onReady?.(), 250)
+    return () => window.clearTimeout(t)
+  }, [cam.phase, onReady])
 
   // Track the picture's size (it flips when the phone rotates).
   useEffect(() => {
@@ -226,8 +282,16 @@ export default function CardCamera({ evaluate, onManual, onChoosePhoto, onCancel
   const sidewaysUi = portrait && !flipped
 
   const status =
-    hint === 'starting'
-      ? 'Starting camera…'
+    cam.phase === 'requesting'
+      ? cam.try > 1
+        ? `Retrying the camera (${cam.try}/3)…`
+        : 'Asking for the camera…'
+      : cam.phase === 'waiting'
+        ? 'Starting camera…'
+        : cam.phase === 'failed'
+          ? 'Camera unavailable'
+          : hint === 'starting'
+            ? 'Starting camera…'
       : checking !== null
         ? 'Reading the text…'
         : message && hint === 'ok'
@@ -256,6 +320,28 @@ export default function CardCamera({ evaluate, onManual, onChoosePhoto, onCancel
 
       <div ref={boxRef} className="relative min-h-0 flex-1 overflow-hidden">
         <video ref={videoRef} className="absolute inset-0 h-full w-full object-contain" playsInline muted autoPlay />
+        {cam.phase === 'failed' && (
+          <div className="absolute inset-0 flex items-center justify-center p-6">
+            <div className="w-full max-w-sm space-y-3 rounded-2xl bg-white p-4 text-sm text-slate-900">
+              <h2 className="text-base font-semibold">The camera didn’t start</h2>
+              {cam.error === 'denied' ? (
+                <p>
+                  Camera access is turned off for this app. On iPhone open <strong>Settings → Apps → Safari → Camera</strong> (older iOS:{' '}
+                  <strong>Settings → Safari → Camera</strong>) and choose <strong>Allow</strong> or <strong>Ask</strong>, then close and reopen the app.
+                </p>
+              ) : (
+                <p>
+                  Close other apps that might be using the camera, then try again.
+                  <span className="mt-1 block text-xs text-slate-500">Details: {cam.error}</span>
+                </p>
+              )}
+              <div className="flex gap-2">
+                <button className="btn-primary flex-1 py-2" onClick={() => setAttempt((n) => n + 1)}>Try again</button>
+                <button className="btn-secondary flex-1 py-2" onClick={() => { stop(); onUnavailable() }}>Use camera app</button>
+              </div>
+            </div>
+          </div>
+        )}
         {g && (
           <div className="pointer-events-none absolute" style={{ left: display.left, top: display.top, width: display.width, height: display.height }}>
             <div
