@@ -4,11 +4,12 @@ import Auth from './components/Auth'
 import ContactForm from './components/ContactForm'
 import ContactList from './components/ContactList'
 import type { LicenseContact } from './lib/aamva'
-import type { CardContact } from './lib/cardParser'
-import { deleteContacts, listContacts, saveContact } from './lib/contactsApi'
+import { splitSuite, type CardContact } from './lib/cardParser'
+import type { IdConsent } from './components/CardScanner'
+import { deleteContacts, listContacts, listFieldDefs, saveContact } from './lib/contactsApi'
 import { shareOrDownload } from './lib/download'
 import { isConfigured, supabase } from './lib/supabase'
-import { emptyDraft, type Contact, type ContactDraft, type TextField } from './lib/types'
+import { emptyAddress, emptyDraft, isBlankAddress, type Contact, type ContactDraft, type CustomFieldDef } from './lib/types'
 import { toVCard, vcardFileName } from './lib/vcard'
 
 // The barcode reader (WebAssembly) only downloads when someone opens the scanner.
@@ -21,7 +22,25 @@ type View =
   | { name: 'list' }
   | { name: 'scan' }
   | { name: 'card' }
-  | { name: 'form'; draft: ContactDraft; editing?: Contact; autoFilled?: TextField[] }
+  | { name: 'form'; draft: ContactDraft; editing?: Contact; autoFilled?: string[] }
+
+/** Scanned fields -> a draft with one labeled address; returns which fields to highlight. */
+function draftFromScan(
+  source: ContactDraft['source'],
+  fields: Partial<ContactDraft> & { street?: string; suite?: string; city?: string; region?: string; postal_code?: string; country?: string },
+  addressLabel: string,
+): { draft: ContactDraft; autoFilled: string[] } {
+  const { street: rawStreet = '', suite: rawSuite = '', city = '', region = '', postal_code = '', country = '', ...rest } = fields
+  // "100 Example St Apt 4" -> street + suite
+  const [street, suite] = rawSuite ? [rawStreet, rawSuite] : splitSuite(rawStreet)
+  const address = { ...emptyAddress(addressLabel), street, suite, city, region, postal_code, country }
+  const draft: ContactDraft = { ...emptyDraft(source), ...rest, addresses: isBlankAddress(address) ? [] : [address] }
+  const autoFilled = Object.entries(rest)
+    .filter(([k, v]) => k !== 'notes' && typeof v === 'string' && v)
+    .map(([k]) => k)
+  if (!isBlankAddress(address)) autoFilled.push(`addr:${address.id}`)
+  return { draft, autoFilled }
+}
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null)
@@ -31,6 +50,7 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [toast, setToast] = useState<{ text: string; contact?: Contact } | null>(null)
   const [loadError, setLoadError] = useState('')
+  const [defs, setDefs] = useState<CustomFieldDef[]>([])
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -39,7 +59,11 @@ export default function App() {
     })
     const { data } = supabase.auth.onAuthStateChange((_event, s) => {
       setSession(s)
-      if (!s) setContacts([]) // never leave one user's data on screen after sign-out
+      if (!s) {
+        // never leave one user's data on screen after sign-out
+        setContacts([])
+        setDefs([])
+      }
     })
     return () => data.subscription.unsubscribe()
   }, [])
@@ -48,7 +72,9 @@ export default function App() {
     setLoading(true)
     setLoadError('')
     try {
-      setContacts(await listContacts())
+      const [cs, ds] = await Promise.all([listContacts(), listFieldDefs()])
+      setContacts(cs)
+      setDefs(ds)
     } catch {
       setLoadError('Couldn’t load contacts. Check your connection.')
     } finally {
@@ -79,15 +105,22 @@ export default function App() {
     setToast({ text: `Deleted ${ids.length}.` })
   }
 
-  function handleLicense(result: LicenseContact, consentAt: string) {
-    const draft: ContactDraft = { ...emptyDraft('license'), ...result, consent_at: consentAt }
-    const autoFilled = (Object.keys(result) as TextField[]).filter((k) => result[k as keyof LicenseContact])
+  function handleLicense(result: LicenseContact, consentAt: string, includedSensitive: boolean) {
+    const fields = includedSensitive ? result : { ...result, dob: '', dl_number: '' }
+    const { draft, autoFilled } = draftFromScan('license', { ...fields, consent_at: consentAt }, 'Home')
     setView({ name: 'form', draft, autoFilled })
   }
 
-  function handleCard(result: CardContact) {
-    const draft: ContactDraft = { ...emptyDraft('card'), ...result }
-    const autoFilled = (Object.keys(result) as TextField[]).filter((k) => k !== 'notes' && result[k as keyof CardContact])
+  function handleCard(result: CardContact, consent?: IdConsent) {
+    // is_id is only a flag; it isn't saved.
+    const { is_id: isId, ...fields } = result
+    if (isId && consent) {
+      const f = consent.includeSensitive ? fields : { ...fields, dob: '', dl_number: '' }
+      const { draft, autoFilled } = draftFromScan('license', { ...f, consent_at: consent.consentAt }, 'Home')
+      setView({ name: 'form', draft, autoFilled })
+      return
+    }
+    const { draft, autoFilled } = draftFromScan('card', { ...fields, dob: '', dl_number: '' }, 'Work')
     setView({ name: 'form', draft, autoFilled })
   }
 
@@ -128,7 +161,7 @@ export default function App() {
               <span className="flex size-12 items-center justify-center rounded-xl bg-slate-900 text-xl text-white" aria-hidden>▤</span>
               <span>
                 <span className="block font-semibold">Scan license</span>
-                <span className="block text-sm text-slate-500">With the holder’s consent · no license number or birth date</span>
+                <span className="block text-sm text-slate-500">Barcode · with the holder’s consent</span>
               </span>
             </button>
             <button className="card flex w-full items-center gap-4 text-left hover:bg-slate-50" onClick={() => setView({ name: 'form', draft: emptyDraft() })}>
@@ -142,7 +175,7 @@ export default function App() {
               <span className="flex size-12 items-center justify-center rounded-xl bg-slate-900 text-xl text-white" aria-hidden>▭</span>
               <span>
                 <span className="block font-semibold">Scan business card</span>
-                <span className="block text-sm text-slate-500">Photo → name, title, company, email, phone, address</span>
+                <span className="block text-sm text-slate-500">Photo of a card, badge or license front</span>
               </span>
             </button>
             <div className="card flex w-full items-center gap-4 opacity-60">
@@ -155,7 +188,7 @@ export default function App() {
             <button className="btn-secondary w-full" onClick={() => setView({ name: 'list' })}>
               Saved contacts ({contacts.length})
             </button>
-            <p className="pt-2 text-center text-xs text-slate-400">Test version · no CRM sync · license number and birth date are never saved</p>
+            <p className="pt-2 text-center text-xs text-slate-400">Test version · no CRM sync · license number and birth date only with opt-in</p>
           </div>
         )}
 
@@ -164,6 +197,7 @@ export default function App() {
             {loadError && <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{loadError}</p>}
             <ContactList
               contacts={contacts}
+              defs={defs}
               loading={loading}
               onEdit={(c) => setView({ name: 'form', draft: { ...c }, editing: c })}
               onDelete={handleDelete}
@@ -189,6 +223,8 @@ export default function App() {
             initial={view.draft}
             autoFilled={view.autoFilled}
             isEdit={Boolean(view.editing)}
+            defs={defs}
+            onDefsChange={setDefs}
             onSave={(d) => handleSave(d, view.editing)}
             onCancel={() => setView(view.editing ? { name: 'list' } : { name: 'home' })}
           />
@@ -201,7 +237,7 @@ export default function App() {
           {toast.contact && (
             <button
               className="rounded-lg bg-white/15 px-3 py-1.5 font-semibold"
-              onClick={() => shareOrDownload(toVCard(toast.contact!), vcardFileName(toast.contact!), 'text/vcard')}
+              onClick={() => shareOrDownload(toVCard(toast.contact!, defs), vcardFileName(toast.contact!), 'text/vcard')}
             >
               Add to phone
             </button>

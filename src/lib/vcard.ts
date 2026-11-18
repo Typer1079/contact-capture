@@ -1,4 +1,4 @@
-import type { ContactDraft } from './types'
+import type { ContactDraft, CustomFieldDef } from './types'
 
 /** Escapes a vCard 3.0 text value. */
 export function vEscape(v: string): string {
@@ -9,8 +9,12 @@ export function vEscape(v: string): string {
     .replace(/;/g, '\\;')
 }
 
-/** Builds a vCard 3.0 (the version both iOS and Android import most reliably). */
-export function toVCard(c: ContactDraft): string {
+/**
+ * Builds a vCard 3.0 (the version both iOS and Android import most reliably).
+ * Date of birth and license number are never included: a phone contact syncs to the cloud
+ * and is easy to share, so those stay in the app.
+ */
+export function toVCard(c: ContactDraft, customDefs: CustomFieldDef[] = []): string {
   const fn = [c.first_name, c.last_name].filter(Boolean).join(' ') || c.company
   const lines = [
     'BEGIN:VCARD',
@@ -22,12 +26,25 @@ export function toVCard(c: ContactDraft): string {
   if (c.title) lines.push(`TITLE:${vEscape(c.title)}`)
   if (c.email) lines.push(`EMAIL;TYPE=INTERNET:${vEscape(c.email)}`)
   if (c.phone) lines.push(`TEL;TYPE=CELL:${vEscape(c.phone)}`)
-  if (c.street || c.city || c.region || c.postal_code || c.country) {
-    lines.push(
-      `ADR;TYPE=WORK:;;${vEscape(c.street)};${vEscape(c.city)};${vEscape(c.region)};${vEscape(c.postal_code)};${vEscape(c.country)}`,
-    )
+  let item = 0
+  for (const a of c.addresses) {
+    // ADR parts: PO box ; extended (suite) ; street ; city ; region ; postal code ; country
+    const value = `;${vEscape(a.suite)};${vEscape(a.street)};${vEscape(a.city)};${vEscape(a.region)};${vEscape(a.postal_code)};${vEscape(a.country)}`
+    const std = a.label.trim().toLowerCase()
+    if (std === 'home' || std === 'work') lines.push(`ADR;TYPE=${std.toUpperCase()}:${value}`)
+    else {
+      // Custom labels (e.g. "Warehouse") use the itemN.X-ABLabel convention iPhone understands.
+      item++
+      lines.push(`item${item}.ADR:${value}`, `item${item}.X-ABLabel:${vEscape(a.label)}`)
+    }
   }
-  if (c.notes) lines.push(`NOTE:${vEscape(c.notes)}`)
+  const extra = [
+    c.hire_date && `Hire date: ${c.hire_date}`,
+    c.home_state && `Home state: ${c.home_state}`,
+    ...customDefs.filter((d) => c.custom[d.id]).map((d) => `${d.label}: ${c.custom[d.id]}`),
+  ].filter(Boolean)
+  const note = [c.notes, ...extra].filter(Boolean).join('\n')
+  if (note) lines.push(`NOTE:${vEscape(note)}`)
   lines.push('END:VCARD')
   return lines.join('\r\n') + '\r\n'
 }

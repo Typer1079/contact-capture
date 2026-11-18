@@ -26,11 +26,14 @@ describe('parseAamva', () => {
     expect(parseAamva(SAMPLE)).toEqual({
       first_name: 'Jane',
       last_name: 'McDonald',
-      street: '123 Main St, Apt 4',
+      street: '123 Main St',
+      suite: 'Apt 4',
       city: 'Sugar Land',
       region: 'TX',
       postal_code: '77479',
       country: 'USA',
+      dob: '',
+      dl_number: '',
       sex: 'Female',
       height: `5'5"`,
       weight: '',
@@ -49,12 +52,20 @@ describe('parseAamva', () => {
     expect(r).toMatchObject({ height: '178 cm', weight: '131–160 lb' })
   })
 
-  it('never returns license number, birth date, or expiry', () => {
+  it('without opt-in, never returns license number or birth date', () => {
     const out = JSON.stringify(parseAamva(SAMPLE))
     expect(out).not.toContain('12345678')
-    expect(out).not.toContain('01151990')
-    expect(out).not.toContain('01152030')
-    expect(Object.keys(parseAamva(SAMPLE)!)).not.toContain('license_number')
+    expect(out).not.toContain('1990')
+  })
+
+  it('never returns the expiry date, even when opted in', () => {
+    const out = JSON.stringify(parseAamva(SAMPLE, { includeSensitive: true }))
+    expect(out).not.toContain('2030')
+  })
+
+  it('reads DOB and license number only when opted in', () => {
+    expect(parseAamva(SAMPLE, { includeSensitive: true })).toMatchObject({ dob: '1990-01-15', dl_number: '12345678' })
+    expect(parseAamva(SAMPLE)).toMatchObject({ dob: '', dl_number: '' })
   })
 
   it('formats ZIP+4', () => {

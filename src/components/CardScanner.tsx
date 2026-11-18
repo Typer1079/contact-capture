@@ -2,8 +2,14 @@ import { useEffect, useState } from 'react'
 import { parseBusinessCard, type CardContact } from '../lib/cardParser'
 import { readCard, warmUpOcr } from '../lib/ocr'
 
+export interface IdConsent {
+  consentAt: string
+  includeSensitive: boolean
+}
+
 interface Props {
-  onResult: (contact: CardContact) => void
+  /** `consent` is set when the photo was a driver's license / ID and the user agreed. */
+  onResult: (contact: CardContact, consent?: IdConsent) => void
   onCancel: () => void
 }
 
@@ -12,6 +18,11 @@ export default function CardScanner({ onResult, onCancel }: Props) {
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState({ p: 0, label: '' })
   const [error, setError] = useState('')
+  // A photo of a driver's license needs the same consent as a barcode scan.
+  const [pendingId, setPendingId] = useState<CardContact | null>(null)
+  const [requested, setRequested] = useState(false)
+  const [personalUse, setPersonalUse] = useState(false)
+  const [includeSensitive, setIncludeSensitive] = useState(false)
 
   // Start loading the text reader while the person lines up the photo.
   useEffect(() => warmUpOcr(), [])
@@ -33,7 +44,8 @@ export default function CardScanner({ onResult, onCancel }: Props) {
         setError('Couldn’t find contact details on that photo. Fill the frame with the card, in good light, and try again.')
         return
       }
-      onResult(contact)
+      if (contact.is_id) setPendingId(contact)
+      else onResult(contact)
     } catch {
       setError('Couldn’t read that photo. Try again, or type the contact in.')
     } finally {
@@ -41,11 +53,47 @@ export default function CardScanner({ onResult, onCancel }: Props) {
     }
   }
 
+  if (pendingId) {
+    const found = [pendingId.dob && 'date of birth', pendingId.dl_number && 'license number'].filter(Boolean).join(' and ')
+    return (
+      <div className="space-y-4">
+        <div className="card space-y-3 text-sm">
+          <h2 className="text-base font-semibold">This looks like a driver’s license</h2>
+          <p>The photo was read on this device. Before saving anything from a license, confirm consent.</p>
+          <label className="flex items-start gap-3">
+            <input type="checkbox" className="mt-0.5 size-5 shrink-0" checked={requested} onChange={(e) => setRequested(e.target.checked)} />
+            <span>The license holder voluntarily asked me to scan their license and agreed to me saving their details.</span>
+          </label>
+          <label className="flex items-start gap-3">
+            <input type="checkbox" className="mt-0.5 size-5 shrink-0" checked={personalUse} onChange={(e) => setPersonalUse(e.target.checked)} />
+            <span>I won’t use this for marketing, solicitation, or send it to a CRM.</span>
+          </label>
+          <label className="flex items-start gap-3 border-t border-slate-200 pt-3">
+            <input type="checkbox" className="mt-0.5 size-5 shrink-0" checked={includeSensitive} onChange={(e) => setIncludeSensitive(e.target.checked)} />
+            <span>
+              <strong>Optional:</strong> also fill in the <strong>{found}</strong> found on the license. The holder agreed to me saving it too.
+            </span>
+          </label>
+        </div>
+        <div className="flex gap-3">
+          <button className="btn-secondary flex-1" onClick={onCancel}>Cancel</button>
+          <button
+            className="btn-primary flex-1"
+            disabled={!requested || !personalUse}
+            onClick={() => onResult(pendingId, { consentAt: new Date().toISOString(), includeSensitive })}
+          >
+            Continue
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-4">
       <div className="card space-y-2 text-sm">
         <h2 className="text-base font-semibold">Scan a business card</h2>
-        <p>Take a photo of the front of the card. The text is read <strong>on this device</strong>; the photo isn’t uploaded or saved.</p>
+        <p>Take a photo of the front of a business card or badge (or a driver’s license front). The text is read <strong>on this device</strong>; the photo isn’t uploaded or saved.</p>
         <ul className="list-disc space-y-1 pl-5 text-slate-600">
           <li>Lay the card flat, fill most of the photo with it</li>
           <li>Good light, no glare or shadows across the text</li>

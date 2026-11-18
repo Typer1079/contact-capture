@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react'
 import { CSV_PRESETS, toCsv } from '../lib/csv'
 import { downloadBlob, shareOrDownload } from '../lib/download'
-import { displayName, type Contact } from '../lib/types'
+import { displayName, type Contact, type CustomFieldDef } from '../lib/types'
 import { toVCard, vcardFileName } from '../lib/vcard'
 
 interface Props {
   contacts: Contact[]
+  defs: CustomFieldDef[]
   loading: boolean
   onEdit: (c: Contact) => void
   onDelete: (ids: string[]) => Promise<void>
@@ -18,17 +19,19 @@ const SOURCE_LABEL: Record<Contact['source'], string> = {
   voice: 'Voice',
 }
 
-export default function ContactList({ contacts, loading, onEdit, onDelete }: Props) {
+export default function ContactList({ contacts, defs, loading, onEdit, onDelete }: Props) {
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [presetId, setPresetId] = useState(CSV_PRESETS[0].id)
   const [deleting, setDeleting] = useState(false)
+  const [includeSensitive, setIncludeSensitive] = useState(false)
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return contacts
     return contacts.filter((c) =>
-      [c.first_name, c.last_name, c.company, c.email, c.phone, c.city].some((v) => v.toLowerCase().includes(q)),
+      [c.first_name, c.last_name, c.company, c.email, c.phone, c.title, ...c.addresses.flatMap((a) => [a.city, a.street, a.label]), ...Object.values(c.custom)]
+        .some((v) => (v ?? '').toLowerCase().includes(q)),
     )
   }, [contacts, query])
 
@@ -51,7 +54,8 @@ export default function ContactList({ contacts, loading, onEdit, onDelete }: Pro
     const rows = selected.size ? contacts.filter((c) => selected.has(c.id)) : filtered
     const preset = CSV_PRESETS.find((p) => p.id === presetId) ?? CSV_PRESETS[0]
     const stamp = new Date().toISOString().slice(0, 10)
-    downloadBlob(new Blob([toCsv(rows, preset)], { type: 'text/csv;charset=utf-8' }), `contacts-${preset.id}-${stamp}.csv`)
+    if (includeSensitive && !window.confirm('This file will include dates of birth and license numbers. Store and share it carefully. Continue?')) return
+    downloadBlob(new Blob([toCsv(rows, preset, { includeSensitive, customDefs: defs })], { type: 'text/csv;charset=utf-8' }), `contacts-${preset.id}-${stamp}.csv`)
   }
 
   async function removeSelected() {
@@ -83,6 +87,10 @@ export default function ContactList({ contacts, loading, onEdit, onDelete }: Pro
             Export {exportCount}
           </button>
         </div>
+        <label className="flex items-center gap-2 text-xs text-slate-600">
+          <input type="checkbox" className="size-4" checked={includeSensitive} onChange={(e) => setIncludeSensitive(e.target.checked)} />
+          Include date of birth & license number
+        </label>
         <div className="flex items-center justify-between text-sm">
           <label className="flex items-center gap-2">
             <input type="checkbox" className="size-4" checked={allVisibleSelected} onChange={toggleAll} />
@@ -108,13 +116,13 @@ export default function ContactList({ contacts, loading, onEdit, onDelete }: Pro
             <button className="min-w-0 flex-1 text-left" onClick={() => onEdit(c)}>
               <div className="truncate font-semibold">{displayName(c)}</div>
               <div className="truncate text-sm text-slate-500">
-                {[c.title, c.company].filter(Boolean).join(' · ') || c.email || c.phone || [c.city, c.region].filter(Boolean).join(', ')}
+                {[c.title, c.company].filter(Boolean).join(' · ') || c.email || c.phone || [c.addresses[0]?.city, c.addresses[0]?.region].filter(Boolean).join(', ')}
               </div>
               <span className="mt-1 inline-block rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">{SOURCE_LABEL[c.source]}</span>
             </button>
             <button
               className="btn-secondary shrink-0 px-3 py-2 text-xs"
-              onClick={() => shareOrDownload(toVCard(c), vcardFileName(c), 'text/vcard')}
+              onClick={() => shareOrDownload(toVCard(c, defs), vcardFileName(c), 'text/vcard')}
               title="Add to phone contacts"
             >
               + Phone

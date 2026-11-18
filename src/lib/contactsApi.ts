@@ -1,13 +1,31 @@
 import { supabase } from './supabase'
-import { TEXT_FIELDS, type Contact, type ContactDraft } from './types'
+import { DATE_FIELDS, TEXT_FIELDS, type Contact, type ContactDraft, type CustomFieldDef } from './types'
 
-const COLUMNS = ['id', ...TEXT_FIELDS, 'source', 'consent_at', 'created_at', 'updated_at'].join(',')
+const COLUMNS = ['id', ...TEXT_FIELDS, ...DATE_FIELDS, 'addresses', 'custom', 'source', 'consent_at', 'created_at', 'updated_at'].join(',')
 
-function toRow(d: ContactDraft): ContactDraft {
+function toRow(d: ContactDraft) {
   // Only send known columns; owner_id is set by the database from the signed-in user.
-  const row = { source: d.source, consent_at: d.consent_at } as ContactDraft
+  const row: Record<string, unknown> = {
+    source: d.source,
+    consent_at: d.consent_at,
+    addresses: d.addresses,
+    custom: d.custom,
+  }
   for (const f of TEXT_FIELDS) row[f] = d[f]
+  for (const f of DATE_FIELDS) row[f] = d[f] || null
   return row
+}
+
+/** Database rows -> app shape (dates as '' when empty, JSON columns always present). */
+function fromRow(r: Record<string, unknown>): Contact {
+  const c = r as unknown as Contact
+  return {
+    ...c,
+    hire_date: (r.hire_date as string | null) ?? '',
+    dob: (r.dob as string | null) ?? '',
+    addresses: Array.isArray(r.addresses) ? (r.addresses as Contact['addresses']) : [],
+    custom: r.custom && typeof r.custom === 'object' && !Array.isArray(r.custom) ? (r.custom as Record<string, string>) : {},
+  }
 }
 
 export async function listContacts(): Promise<Contact[]> {
@@ -17,7 +35,7 @@ export async function listContacts(): Promise<Contact[]> {
     .order('created_at', { ascending: false })
     .limit(5000)
   if (error) throw error
-  return (data ?? []) as unknown as Contact[]
+  return ((data ?? []) as unknown as Record<string, unknown>[]).map(fromRow)
 }
 
 export async function saveContact(draft: ContactDraft, id?: string): Promise<Contact> {
@@ -26,11 +44,44 @@ export async function saveContact(draft: ContactDraft, id?: string): Promise<Con
     : supabase.from('contacts').insert(toRow(draft))
   const { data, error } = await query.select(COLUMNS).single()
   if (error) throw error
-  return data as unknown as Contact
+  return fromRow(data as unknown as Record<string, unknown>)
 }
 
 export async function deleteContacts(ids: string[]): Promise<void> {
   if (ids.length === 0) return
   const { error } = await supabase.from('contacts').delete().in('id', ids)
+  if (error) throw error
+}
+
+// ---- Custom field definitions ----------------------------------------------------------------
+
+const DEF_COLUMNS = 'id,label,kind,position'
+
+export async function listFieldDefs(): Promise<CustomFieldDef[]> {
+  const { data, error } = await supabase.from('custom_field_defs').select(DEF_COLUMNS).order('position').order('created_at')
+  if (error) throw error
+  return (data ?? []) as CustomFieldDef[]
+}
+
+export async function createFieldDef(label: string, kind: CustomFieldDef['kind'], position: number): Promise<CustomFieldDef> {
+  const { data, error } = await supabase.from('custom_field_defs').insert({ label, kind, position }).select(DEF_COLUMNS).single()
+  if (error) {
+    if (error.code === '23505') throw new Error(`You already have a field called “${label}”.`)
+    throw error
+  }
+  return data as CustomFieldDef
+}
+
+export async function renameFieldDef(id: string, label: string): Promise<void> {
+  const { error } = await supabase.from('custom_field_defs').update({ label }).eq('id', id)
+  if (error) {
+    if (error.code === '23505') throw new Error(`You already have a field called “${label}”.`)
+    throw error
+  }
+}
+
+/** Removes the field from the list. Values already saved on contacts are kept but hidden. */
+export async function deleteFieldDef(id: string): Promise<void> {
+  const { error } = await supabase.from('custom_field_defs').delete().eq('id', id)
   if (error) throw error
 }

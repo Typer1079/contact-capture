@@ -6,6 +6,9 @@ A mobile-first web app (installable PWA) for capturing contacts and exporting th
 - Sign in with email + password (Supabase Auth)
 - Type a contact by hand, or scan the PDF417 barcode on the back of a US/Canadian driver's license (consent required; keeps name, address, sex and physical description, never the license number or birth date)
 - **Scan a business card**: take a photo and on-device text recognition (Tesseract OCR) fills in name, title, company, email, phone, and address. Website, extra phone numbers, and any other text go into Notes.
+- **Labeled addresses**: Home and Work are standard; rename a label (e.g. "Warehouse") or add more. Each has street, suite, city, state, ZIP, country.
+- **Hire date, home state, date of birth, driver's license #** fields. DOB and DL# are masked, never added to phone contacts, and only exported to CSV when you tick "Include date of birth & license number".
+- **Custom fields**: add your own fields (text, number, or date) from any contact; they appear on every contact and in the "All fields" CSV.
 - Saved contact list with search, multi-select, and delete
 - **Add to phone**: one tap builds a vCard so iOS or Android can save it to Contacts
 - **CSV export** in three layouts: All fields, Google Contacts, Outlook
@@ -23,6 +26,7 @@ A mobile-first web app (installable PWA) for capturing contacts and exporting th
 | Keys in the browser | Only Supabase's *publishable/anon* key is in the app. It's designed to be public; RLS is what protects data. The secret `service_role` key is never used. |
 | License data | Barcode is decoded **on the device** (WebAssembly, self-hosted, no CDN). The parser only reads name, address, sex, height, weight, eye and hair color. License number, birth date, expiry, and document numbers are never extracted, saved, or sent. |
 | Business card photos | Read **on the device** by a self-hosted OCR engine (served from this site's `/ocr/` folder, no CDN). The photo is never uploaded or saved; only the fields you review and save are stored. |
+| DOB and license # | Read from a license (barcode or photo) **only** with a separate opt-in tick on the consent screen. Masked on screen, never in the phone vCard, excluded from CSV unless you choose. |
 | Consent | Scanning is blocked until two consent boxes are ticked. The time of consent is saved with the contact, and the database rejects license-sourced contacts without it. |
 | Cross-site scripting | Strict Content Security Policy (no inline scripts, no third-party scripts), React escaping, input length limits on the client and in the database. |
 | CSV injection | Cells starting with `= + - @` are prefixed with `'` so Excel won't run them as formulas. |
@@ -109,7 +113,7 @@ src/
     LicenseScanner.tsx     consent gate + camera/photo PDF417 scan
     CardScanner.tsx        business card photo → OCR → review form
   lib/
-    aamva.ts               license parser (allow-list: name, address, physical description)
+    aamva.ts               license parser (allow-list; DOB + license # only with opt-in)
     barcode.ts             on-device PDF417 reader (zxing-wasm, self-hosted)
     ocr.ts                 on-device text recognition (tesseract.js, self-hosted)
     cardParser.ts          turns card text into name/title/company/email/phone/address

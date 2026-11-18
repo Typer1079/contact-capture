@@ -3,7 +3,7 @@ import { parseAamva, type LicenseContact } from '../lib/aamva'
 import { DESKEW_ANGLES, initBarcodeReader, scanImage, scanPhoto, type ScanResult } from '../lib/barcode'
 
 interface Props {
-  onResult: (contact: LicenseContact, consentAt: string) => void
+  onResult: (contact: LicenseContact, consentAt: string, includedSensitive: boolean) => void
   onCancel: () => void
 }
 
@@ -13,6 +13,7 @@ export default function LicenseScanner({ onResult, onCancel }: Props) {
   const [stage, setStage] = useState<Stage>('consent')
   const [requested, setRequested] = useState(false)
   const [personalUse, setPersonalUse] = useState(false)
+  const [includeSensitive, setIncludeSensitive] = useState(false)
   const [consentAt, setConsentAt] = useState<string | null>(null)
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
@@ -35,7 +36,7 @@ export default function LicenseScanner({ onResult, onCancel }: Props) {
         if (result.sawSmallBarcode) setError('That’s the small barcode. Aim at the large, wide barcode on the back of the license.')
         return false
       }
-      const parsed = parseAamva(raw)
+      const parsed = parseAamva(raw, { includeSensitive })
       // `raw` holds the full license data; it goes out of scope here and is never stored or sent.
       if (!parsed) {
         setError('Found a barcode, but it isn’t a readable driver’s license. Try again.')
@@ -43,10 +44,10 @@ export default function LicenseScanner({ onResult, onCancel }: Props) {
       }
       doneRef.current = true
       stopCamera()
-      onResult(parsed, consentAt)
+      onResult(parsed, consentAt, includeSensitive)
       return true
     },
-    [consentAt, onResult, stopCamera],
+    [consentAt, includeSensitive, onResult, stopCamera],
   )
 
   // Live camera scanning loop.
@@ -135,8 +136,9 @@ export default function LicenseScanner({ onResult, onCancel }: Props) {
         <div className="card space-y-3 text-sm">
           <h2 className="text-base font-semibold">Before you scan</h2>
           <p>
-            The barcode is read <strong>on this device</strong>. Only the person’s <strong>name, address, sex and physical description</strong> (height,
-            weight, eye and hair color) are kept. The license number and birth date are discarded right away and never saved or sent anywhere.
+            The barcode is read <strong>on this device</strong>. The person’s <strong>name, address, sex and physical description</strong>{' '}
+            are kept. The license number and birth date are only read if you tick the last box; everything else on the barcode is discarded
+            right away and never saved or sent anywhere.
           </p>
           <label className="flex items-start gap-3">
             <input type="checkbox" className="mt-0.5 size-5 shrink-0" checked={requested} onChange={(e) => setRequested(e.target.checked)} />
@@ -145,6 +147,12 @@ export default function LicenseScanner({ onResult, onCancel }: Props) {
           <label className="flex items-start gap-3">
             <input type="checkbox" className="mt-0.5 size-5 shrink-0" checked={personalUse} onChange={(e) => setPersonalUse(e.target.checked)} />
             <span>I won’t use this for marketing, solicitation, or send it to a CRM.</span>
+          </label>
+          <label className="flex items-start gap-3 border-t border-slate-200 pt-3">
+            <input type="checkbox" className="mt-0.5 size-5 shrink-0" checked={includeSensitive} onChange={(e) => setIncludeSensitive(e.target.checked)} />
+            <span>
+              <strong>Optional:</strong> also fill in <strong>date of birth and license number</strong>. The license holder agreed to me saving these too.
+            </span>
           </label>
         </div>
         <div className="flex gap-3">

@@ -22,11 +22,54 @@ export interface CardContact {
   email: string
   phone: string
   street: string
+  suite: string
   city: string
   region: string
   postal_code: string
   country: string
+  hire_date: string
+  home_state: string
+  /** Read from the printed front of a driver's license; YYYY-MM-DD */
+  dob: string
+  dl_number: string
+  sex: string
+  height: string
+  eye_color: string
   notes: string
+  /** True when the photo looks like a driver's license / ID (DOB or license number found). */
+  is_id: boolean
+}
+
+const EYE_CODES: Record<string, string> = { BLK: 'Black', BLU: 'Blue', BRO: 'Brown', BRN: 'Brown', GRY: 'Gray', GRN: 'Green', HAZ: 'Hazel', MAR: 'Maroon', PNK: 'Pink' }
+
+/** "1.15.21" / "01/15/2021" -> "2021-01-15". Two-digit years: future = last century. */
+function toIsoDate(m: string, d: string, y: string, pastOnly: boolean): string {
+  let year = Number(y)
+  if (y.length === 2) {
+    const nowYY = new Date().getFullYear() % 100
+    year = (pastOnly ? year <= nowYY : year <= nowYY + 10) ? 2000 + year : 1900 + year
+  }
+  const iso = `${year}-${String(Number(m)).padStart(2, '0')}-${String(Number(d)).padStart(2, '0')}`
+  const t = new Date(iso + 'T00:00:00Z')
+  return !Number.isNaN(t.getTime()) && t.toISOString().slice(0, 10) === iso ? iso : ''
+}
+
+const DATE_PART = '(\\d{1,2})\\s*[./-]\\s*(\\d{1,2})\\s*[./-]\\s*(\\d{2,4})'
+const HIRE_RE = new RegExp(`HIRE\\s*DATE\\s*[:.]?\\s*${DATE_PART}`, 'i')
+// OCR sometimes drops the second dot: "1.1521" -> 1 / 15 / 21
+const HIRE_SQUASHED_RE = /HIRE\s*DATE\s*[:.]?\s*(\d{1,2})[./-](\d{2})(\d{2})\b/i
+const HOME_STATE_RE = /HOME\s*STATE\s*[:.]?\s*([A-Z]{2})\b/i
+const DOB_RE = new RegExp(`\\b(?:3\\s*)?(?:DOB|DATE\\s*OF\\s*BIRTH|BIRTH\\s*DATE)\\s*[:.]?\\s*${DATE_PART}`, 'i')
+const DLN_RE = /\b(?:4d\s*)?(?:DLN|DL\s*(?:NO|#|NUMBER)|LIC(?:ENSE)?\s*(?:NO|#|NUMBER))\.?\s*[:#]?\s*([A-Z]?\d[\d -]{4,16}\d)/i
+const SEX_RE = /\bSEX\s*[:.]?\s*([MFX])\b/i
+const HGT_RE = /\bHGT\s*[:.]?\s*(\d)\s*['’-]\s*(\d{1,2})/i
+const EYES_RE = /\bEYES\s*[:.]?\s*([A-Z]{3})\b/i
+
+/** "1500 Main St, Suite 200" -> ["1500 Main St", "Suite 200"] */
+export function splitSuite(street: string): [string, string] {
+  const m = street.match(/^(.*?)(?:,\s*|\s+)((?:suite|ste\.?|unit|apt\.?|apartment|#|floor|fl\.?|bldg\.?|building|room|rm\.?)\s*#?\s*[\w-]+)\s*$/i)
+  if (!m || !m[1].trim()) return [street, '']
+  return [m[1].trim().replace(/,$/, ''), m[2].trim()]
 }
 
 const TITLE_WORDS =
@@ -197,7 +240,9 @@ function companyCase(name: string): string {
 export function parseBusinessCard(input: CardLine[]): CardContact {
   const out: CardContact = {
     first_name: '', last_name: '', company: '', title: '', email: '', phone: '',
-    street: '', city: '', region: '', postal_code: '', country: '', notes: '',
+    street: '', suite: '', city: '', region: '', postal_code: '', country: '',
+    hire_date: '', home_state: '', dob: '', dl_number: '', sex: '', height: '', eye_color: '',
+    notes: '', is_id: false,
   }
 
   const lines = joinSplitEmails(
@@ -211,6 +256,36 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
   )
   const used = new Set<number>()
   const extras: string[] = []
+
+  // 0. Labeled fields: badges ("HIRE DATE: 1.15.21", "HOME STATE: TX") and the printed
+  //    front of a driver's license ("DOB 01/15/1990", "4d DLN 12345678", "SEX M", ...).
+  lines.forEach((l, i) => {
+    const t = l.text
+    let hit = false
+    let m: RegExpMatchArray | null
+    if ((m = t.match(HIRE_RE) ?? t.match(HIRE_SQUASHED_RE)) && !out.hire_date) { out.hire_date = toIsoDate(m[1], m[2], m[3], true); hit = true }
+    if ((m = t.match(HOME_STATE_RE)) && new RegExp(`^(${STATES})$`, 'i').test(m[1]) && !out.home_state) { out.home_state = m[1].toUpperCase(); hit = true }
+    if ((m = t.match(DOB_RE)) && !out.dob) { out.dob = toIsoDate(m[1], m[2], m[3], true); hit = true }
+    if ((m = t.match(DLN_RE)) && !out.dl_number) { out.dl_number = m[1].replace(/[\s-]/g, '').toUpperCase(); hit = true }
+    if ((m = t.match(SEX_RE)) && !out.sex) { out.sex = { M: 'Male', F: 'Female', X: 'X' }[m[1].toUpperCase() as 'M' | 'F' | 'X']; hit = true }
+    if ((m = t.match(HGT_RE)) && !out.height) { out.height = `${m[1]}'${Number(m[2])}"`; hit = true }
+    if ((m = t.match(EYES_RE)) && !out.eye_color) { out.eye_color = EYE_CODES[m[1].toUpperCase()] ?? ''; hit = true }
+    // Only consume the line if nothing else useful is on it.
+    if (hit && !EMAIL.test(t) && !CITY_STATE_ZIP.test(t)) used.add(i)
+  })
+  out.is_id = Boolean(out.dob || out.dl_number)
+  if (out.is_id) {
+    // License fronts number their fields: "1 SAMPLE" (last name), "2 TEST PERSON" (first + middle),
+    // "8 100 EXAMPLE ST" (address). Strip the numbers so the normal rules can use the text.
+    lines.forEach((l, i) => {
+      if (used.has(i)) return
+      const last = l.text.match(/^\s*1\s+([A-Za-z][A-Za-z' -]+)$/)
+      const first = l.text.match(/^\s*2\s+([A-Za-z][A-Za-z' -]+)$/)
+      if (last && !out.last_name) { out.last_name = titleCaseIfShouting(last[1].trim()); used.add(i) }
+      else if (first && !out.first_name) { out.first_name = titleCaseIfShouting(first[1].trim().split(/\s+/)[0]); used.add(i) }
+      else lines[i] = { ...l, text: l.text.replace(/^\s*8\s+(?=\d)/, '') }
+    })
+  }
 
   // 1. Email (and website, which also hints at the company).
   let emailLocal = ''
@@ -362,7 +437,7 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
   }
   cands.sort((x, y) => y.score - x.score)
   const pick = cands[0]
-  if (pick && (pick.score >= 1 || !emailName)) {
+  if (pick && !out.first_name && !out.last_name && (pick.score >= 1 || !emailName)) {
     out.first_name = pick.first
     out.last_name = pick.last
     pick.idx.forEach((i) => used.add(i))
@@ -436,6 +511,9 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
   }
   // Mark lines that are exactly the company name as used.
   if (out.company) lines.forEach((l, i) => squash(l.text) === squash(out.company) && used.add(i))
+
+  // Street and suite go in separate fields.
+  if (out.street) [out.street, out.suite] = splitSuite(out.street)
 
   // 7. Everything left goes to Notes so nothing is lost.
   // Skip tiny fragments (logo bits, OCR noise); keep anything with real content.

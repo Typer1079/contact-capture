@@ -17,7 +17,8 @@ describe('parseBusinessCard', () => {
       company: 'Acme Roofing LLC',
       email: 'jane.mcdonald@acmeroofing.com',
       phone: '(281) 555-0142',
-      street: '1500 Main Street, Suite 200',
+      street: '1500 Main Street',
+      suite: 'Suite 200',
       city: 'Sugar Land',
       region: 'TX',
       postal_code: '77479',
@@ -63,9 +64,26 @@ describe('parseBusinessCard', () => {
     )
     expect(r).toMatchObject({
       first_name: 'Daniel', last_name: 'Quam', company: 'Guardian RFID', email: 'daniel.quam@guardianrfid.com', phone: '(832) 594-1714',
-      street: '6900 Wedgwood Rd. N, Suite 325', city: 'Maple Grove', region: 'MN', postal_code: '55311',
+      street: '6900 Wedgwood Rd. N', suite: 'Suite 325', city: 'Maple Grove', region: 'MN', postal_code: '55311',
+      hire_date: '2021-01-15', home_state: 'TX', is_id: false,
     })
-    expect(r.notes).toContain('HIRE DATE')
+    expect(r.notes).not.toContain('HIRE DATE')
+  })
+
+  it('reads a hire date even when OCR drops a dot', () => {
+    expect(parseBusinessCard(L(['Pat Kim', 30], 'HIRE DATE: 1.1521 HOME STATE: TX', 'pat@kimco.com'))).toMatchObject({ hire_date: '2021-01-15', home_state: 'TX' })
+  })
+
+  it('reads the printed front of a Texas driver license', () => {
+    const r = parseBusinessCard(
+      L('TEXAS', 'USA DRIVER LICENSE', '4d DLN 12345678', '3 DOB 01/15/1990', ['1 SAMPLE', 30], ['2 TEST PERSON', 30], '8 100 EXAMPLE ST APT 4', 'SUGAR LAND, TX 77478',
+        '15 SEX M 16 HGT 5-10', '18 EYES BRO', '4b EXP 01/15/2030'),
+    )
+    expect(r).toMatchObject({
+      is_id: true, first_name: 'Test', last_name: 'Sample', dob: '1990-01-15', dl_number: '12345678',
+      street: '100 Example St', suite: 'Apt 4', city: 'Sugar Land', region: 'TX', postal_code: '77478',
+      sex: 'Male', height: `5'10"`, eye_color: 'Brown',
+    })
   })
 
   it('uses the larger stacked word as the first name', () => {

@@ -1,21 +1,27 @@
 /**
  * Minimal AAMVA (US/Canada driver's license PDF417) parser.
  *
- * DATA MINIMIZATION: this parser only returns the name, mailing address, sex and
- * physical description (height, weight, eye and hair color). It deliberately does NOT
- * read or return the license number (DAQ), date of birth (DBB), issue/expiry dates,
- * document numbers, or any other element. Those values stay in the raw barcode string,
- * which the scanner drops as soon as parsing finishes.
+ * DATA MINIMIZATION: by default this parser only returns the name, mailing address, sex
+ * and physical description (height, weight, eye and hair color). The license number (DAQ)
+ * and date of birth (DBB) are read ONLY when the caller passes { includeSensitive: true },
+ * which the app does only after a separate, explicit opt-in on the consent screen.
+ * Issue/expiry dates, document numbers, and every other element are never read. They stay
+ * in the raw barcode string, which the scanner drops as soon as parsing finishes.
  */
 
 export interface LicenseContact {
   first_name: string
   last_name: string
   street: string
+  suite: string
   city: string
   region: string
   postal_code: string
   country: string
+  /** Only filled with { includeSensitive: true }; YYYY-MM-DD */
+  dob: string
+  /** Only filled with { includeSensitive: true } */
+  dl_number: string
   sex: string
   height: string
   weight: string
@@ -123,9 +129,24 @@ function formatZip(raw: string, country: string): string {
   return z
 }
 
-/** Returns name, address, sex and physical description only, or null if the data isn't a readable AAMVA barcode. */
-export function parseAamva(raw: string): LicenseContact | null {
+/** AAMVA dates: MMDDCCYY in the US, CCYYMMDD in Canada. Returns YYYY-MM-DD or ''. */
+function formatDob(raw: string, country: string): string {
+  const d = raw.replace(/\D/g, '')
+  if (d.length !== 8) return ''
+  const ymdFirst = country === 'CAN' || (Number(d.slice(0, 4)) > 1900 && Number(d.slice(4, 6)) <= 12 && Number(d.slice(0, 2)) > 12)
+  const [y, m, day] = ymdFirst ? [d.slice(0, 4), d.slice(4, 6), d.slice(6, 8)] : [d.slice(4, 8), d.slice(0, 2), d.slice(2, 4)]
+  const iso = `${y}-${m}-${day}`
+  const t = new Date(iso + 'T00:00:00Z')
+  return !Number.isNaN(t.getTime()) && t.toISOString().slice(0, 10) === iso ? iso : ''
+}
+
+/**
+ * Returns name, address, sex and physical description (plus DOB and license number only
+ * when `includeSensitive` is set), or null if the data isn't a readable AAMVA barcode.
+ */
+export function parseAamva(raw: string, opts: { includeSensitive?: boolean } = {}): LicenseContact | null {
   if (!raw || !isAamva(raw)) return null
+  const allowed = opts.includeSensitive ? new Set([...ALLOWED, 'DAQ', 'DBB']) : ALLOWED
 
   const fields: Record<string, string> = {}
   // eslint-disable-next-line no-control-regex -- AAMVA uses record/group separators
@@ -134,7 +155,7 @@ export function parseAamva(raw: string): LicenseContact | null {
     const m = line.match(/(?:^|DL|ID)(D[A-Z]{2})(.*)$/)
     if (!m) continue
     const [, code, value] = m
-    if (ALLOWED.has(code) && !(code in fields)) fields[code] = value
+    if (allowed.has(code) && !(code in fields)) fields[code] = value
   }
 
   let last = clean(fields.DCS) || clean(fields.DAB)
@@ -147,16 +168,18 @@ export function parseAamva(raw: string): LicenseContact | null {
   }
 
   const country = clean(fields.DCG).toUpperCase()
-  const street = [clean(fields.DAG), clean(fields.DAH)].filter(Boolean).join(', ')
 
   const result: LicenseContact = {
     first_name: titleCase(first),
     last_name: titleCase(last),
-    street: titleCase(street),
+    street: titleCase(clean(fields.DAG)),
+    suite: titleCase(clean(fields.DAH)),
     city: titleCase(clean(fields.DAI)),
     region: clean(fields.DAJ).toUpperCase(),
     postal_code: formatZip(clean(fields.DAK), country),
     country: country === 'USA' ? 'USA' : country === 'CAN' ? 'Canada' : country,
+    dob: opts.includeSensitive ? formatDob(clean(fields.DBB), country) : '',
+    dl_number: opts.includeSensitive ? clean(fields.DAQ).toUpperCase() : '',
     sex: formatSex(clean(fields.DBC)),
     height: formatHeight(clean(fields.DAU)),
     weight: formatWeight(clean(fields.DAW), clean(fields.DAX), clean(fields.DCE)),
