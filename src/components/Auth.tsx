@@ -45,16 +45,29 @@ export default function Auth() {
         {mode === 'signin' ? 'Sign in to your saved contacts.' : mode === 'signup' ? 'Create your account.' : 'Reset your password.'}
       </p>
 
-      <form onSubmit={submit} className="mt-6 space-y-4">
+      <form onSubmit={submit} method="post" action="#" className="mt-6 space-y-4">
         <div>
           <label className="label" htmlFor="email">Email</label>
-          <input id="email" className="input" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+          {/* name + autocomplete="username" is what Apple Passwords (and other password managers) look for. */}
+          <input
+            id="email"
+            name="email"
+            className="input"
+            type="email"
+            autoComplete="username"
+            autoCapitalize="none"
+            spellCheck={false}
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
         </div>
         {mode !== 'reset' && (
           <div>
             <label className="label" htmlFor="password">Password</label>
             <input
               id="password"
+              name="password"
               className="input"
               type="password"
               autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
