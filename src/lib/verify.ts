@@ -69,8 +69,7 @@ export function suspiciousFields(c: Checkable): string[] {
   const generic = /^(gmail|yahoo|hotmail|outlook|aol|icloud|me|live|msn|comcast|att|sbcglobal|protonmail)$/
   if (c.company && domain && !generic.test(domain)) {
     const sq = c.company.toLowerCase().replace(/[^a-z0-9]/g, '')
-    const initials = c.company.split(/\s+/).map((w) => w[0]?.toLowerCase() ?? '').join('')
-    const related = sq.includes(domain) || domain.includes(sq.slice(0, Math.max(4, Math.min(sq.length, 6)))) || domain.startsWith(initials)
+    const related = sq.includes(domain) || domain.includes(sq.slice(0, Math.max(4, Math.min(sq.length, 6)))) || initialsMatchDomain(c.company, domain)
     if (!related) out.add('company')
   }
   return [...out]
@@ -109,4 +108,34 @@ export function mergeReadings<T extends object>(readings: T[], preferred: T, fie
     if (groups.length > 1) disputed.push(f)
   }
   return { merged, disputed }
+}
+
+const FILLER = /^(inc|llc|llp|pllc|lp|ltd|co|corp|corporation|company|the|of|and|for)$/i
+/** "Unified Investigations & Sciences, Inc." -> "uis" (ignores &, Inc, LLC, of, and…). */
+export function companyInitials(name: string): string {
+  return name
+    .split(/[\s,]+/)
+    .map((w) => w.replace(/[^A-Za-z]/g, ''))
+    .filter((w) => w && !FILLER.test(w))
+    .map((w) => w[0].toLowerCase())
+    .join('')
+}
+/** Do the company's initials spell the domain ("uis-usa", "uisusa", "uis")? */
+export function initialsMatchDomain(name: string, domain: string): boolean {
+  const ini = companyInitials(name)
+  if (ini.length < 2) return false
+  const d = domain.toLowerCase()
+  return d === ini || d.split('-')[0] === ini || (ini.length >= 3 && d.startsWith(ini))
+}
+
+/** Number of single-character edits between two strings. */
+export function editDistance(a: string, b: string): number {
+  if (Math.abs(a.length - b.length) > 8) return 99
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i]
+    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+    prev = cur
+  }
+  return prev[b.length]
 }

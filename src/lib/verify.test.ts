@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mergeReadings, plausiblePhone, suspiciousFields, zipMatchesState } from './verify'
+import { companyInitials, editDistance, initialsMatchDomain, mergeReadings, plausiblePhone, suspiciousFields, zipMatchesState } from './verify'
 
 const base = { first_name: 'Daniel', last_name: 'Quam', company: 'Guardian RFID', email: 'daniel.quam@guardianrfid.com', phone: '(832) 594-1714', city: 'Maple Grove', region: 'MN', postal_code: '55311' }
 
@@ -41,4 +41,13 @@ describe('accuracy checks', () => {
     expect(merged.phone).toBe('832.594.1714') // same number; keeps the preferred formatting
     expect(disputed).toEqual(['postal_code'])
   })
+
+  it('matches a company to its initials domain', () => {
+    expect(companyInitials('Unified Investigations & Sciences, Inc.')).toBe('uis')
+    expect(initialsMatchDomain('Unified Investigations & Sciences, Inc.', 'uis-usa')).toBe(true)
+    expect(initialsMatchDomain('Acme Roofing', 'uis-usa')).toBe(false)
+    expect(suspiciousFields({ company: 'Unified Investigations & Sciences, Inc.', email: 'aleake@uis-usa.com' } as never)).not.toContain('company')
+    expect(editDistance('223egreenbriar', '923egreenbriar')).toBe(1)
+  })
 })
+

@@ -1,3 +1,4 @@
+import { editDistance } from './verify'
 import { createWorker, OEM, PSM, type Worker } from 'tesseract.js'
 import type { CardLine } from './cardParser'
 
@@ -45,7 +46,13 @@ export function warmUpOcr() {
  * - removes glare and uneven lighting by subtracting a blurred copy (the local background),
  *   which leaves dark text on an even light background (`polarity` -1 for light-on-dark cards).
  */
-function preprocess(src: ImageBitmap | HTMLImageElement, turns: number, maxDim: number, stretch: number, polarity: 1 | -1): HTMLCanvasElement {
+type Box = { x0: number; y0: number; x1: number; y1: number }
+
+/**
+ * Turns the photo upright, removes glare and shadows, and boosts the text.
+ * With `crop` (fractions of the upright image), only that part is produced: much faster.
+ */
+function preprocess(src: ImageBitmap | HTMLImageElement, turns: number, maxDim: number, stretch: number, polarity: 1 | -1, crop?: Box): HTMLCanvasElement {
   const sw = 'naturalWidth' in src ? src.naturalWidth : src.width
   const sh = 'naturalHeight' in src ? src.naturalHeight : src.height
   const scale = Math.min(1, maxDim / Math.max(sw, sh))
@@ -53,11 +60,15 @@ function preprocess(src: ImageBitmap | HTMLImageElement, turns: number, maxDim: 
   // Stretch is applied along the text's horizontal axis (after rotation).
   const w = Math.round(sw * scale * (sideways ? 1 : stretch))
   const h = Math.round(sh * scale * (sideways ? stretch : 1))
+  const fullW = sideways ? h : w
+  const fullH = sideways ? w : h
+  const left = crop ? Math.max(0, Math.floor(crop.x0 * fullW)) : 0
+  const top = crop ? Math.max(0, Math.floor(crop.y0 * fullH)) : 0
   const canvas = document.createElement('canvas')
-  canvas.width = sideways ? h : w
-  canvas.height = sideways ? w : h
+  canvas.width = crop ? Math.max(1, Math.min(fullW, Math.ceil(crop.x1 * fullW)) - left) : fullW
+  canvas.height = crop ? Math.max(1, Math.min(fullH, Math.ceil(crop.y1 * fullH)) - top) : fullH
   const ctx = canvas.getContext('2d', { willReadFrequently: true })!
-  ctx.translate(canvas.width / 2, canvas.height / 2)
+  ctx.translate(fullW / 2 - left, fullH / 2 - top)
   ctx.rotate((turns * Math.PI) / 2)
   ctx.drawImage(src, -w / 2, -h / 2, w, h)
   ctx.setTransform(1, 0, 0, 1, 0, 0)
@@ -93,6 +104,7 @@ function preprocess(src: ImageBitmap | HTMLImageElement, turns: number, maxDim: 
 interface TesseractLine {
   text: string
   confidence: number
+  words?: { text: string; confidence: number }[]
   bbox: { x0: number; y0: number; x1: number; y1: number }
 }
 interface TesseractData {
@@ -102,6 +114,12 @@ interface TesseractData {
 
 export interface ReadLine extends CardLine {
   confidence: number
+  /** Each word with its own confidence, so two readings of a line can be compared word by word. */
+  words?: { text: string; confidence: number }[]
+  /** Where the line sits, as fractions (0–1) of the image width/height. */
+  box?: Box
+  /** The other pass read this line differently; kept so the dispute can be settled. */
+  alt?: ReadLine
 }
 
 /** Pulls lines out of Tesseract's result, with position and size scaled to 0–1000 of the image height. */
@@ -137,6 +155,8 @@ export function linesFromResult(
       height: (l.bbox.y1 - l.bbox.y0) * k,
       y: l.bbox.y0 * k,
       confidence: l.confidence,
+      box: imageWidth > 0 ? { x0: l.bbox.x0 / imageWidth, y0: l.bbox.y0 / imageHeight, x1: l.bbox.x1 / imageWidth, y1: l.bbox.y1 / imageHeight } : undefined,
+      words: (l.words ?? []).filter((w) => w.text.trim()).map((w) => ({ text: w.text.trim(), confidence: w.confidence })),
     })),
     confidence: data.confidence,
     words: kept.reduce((n, l) => n + l.text.trim().split(/\s+/).length, 0),
@@ -158,16 +178,76 @@ export function mergeLines(passes: ReadLine[][]): ReadLine[] {
       const p = squash(o.text)
       if (p === q) return true
       const [short, long] = p.length < q.length ? [p, q] : [q, p]
-      return short.length >= 4 && long.includes(short) && Math.abs((o.y ?? 0) - (line.y ?? 0)) < 40
+      const near = Math.abs((o.y ?? 0) - (line.y ?? 0)) < 40
+      if (short.length >= 4 && long.includes(short) && near) return true
+      // Same line read slightly differently by the two passes ("223 E." vs "923 E.").
+      return near && short.length >= 6 && editDistance(p, q) <= Math.max(1, Math.floor(long.length * 0.1))
     })
     if (same < 0) out.push(line)
     else {
       const o = out[same]
-      const better = squash(line.text).length > squash(o.text).length + 2 ? line : line.confidence > o.confidence + 5 ? line : o
-      out[same] = better
+      const better = squash(line.text).length > squash(o.text).length + 2 ? line : line.confidence > o.confidence ? line : o
+      const other = better === line ? o : line
+      // Same length but different characters: a real disagreement worth a closer look.
+      out[same] = squash(other.text) !== squash(better.text) && Math.abs(squash(other.text).length - squash(better.text).length) <= 2
+        ? { ...better, box: better.box ?? other.box, alt: other }
+        : better
     }
   }
   return out.sort((a, b) => (a.y ?? 0) - (b.y ?? 0))
+}
+
+/**
+ * When the two passes read a line differently ("223 E." vs "923 E.", "4840" vs "4340"), read just
+ * that line once more from a full-resolution crop and keep the version the third read agrees with.
+ */
+async function settleDisputes(worker: Worker, photo: ImageBitmap | HTMLImageElement, turns: number, polarity: 1 | -1, lines: ReadLine[]) {
+  const disputed = lines.filter((l) => l.alt && l.box).slice(0, 8)
+  if (!disputed.length) return
+  // Two extra looks at each disputed line: as-is and slightly widened (each fixes different slips).
+  const votes = new Map<ReadLine, [number, number]>(disputed.map((l) => [l, [0, 0]]))
+  await worker.setParameters({ tessedit_pageseg_mode: PSM.SINGLE_LINE })
+  try {
+    for (const stretch of [1, 1.3]) {
+      for (const l of disputed) {
+        const b = l.box!
+        const padY = (b.y1 - b.y0) * 0.35
+        const padX = (b.y1 - b.y0) * 0.8
+        // A band around the line, tall enough for the glare removal to see the card around the text.
+        const band = (b.y1 - b.y0) * 2.5
+        const crop = { x0: Math.max(0, b.x0 - padX - band), y0: Math.max(0, b.y0 - band), x1: Math.min(1, b.x1 + padX + band), y1: Math.min(1, b.y1 + band) }
+        const canvas = preprocess(photo, turns, 2600, stretch, polarity, crop)
+        const cw = crop.x1 - crop.x0
+        const ch = crop.y1 - crop.y0
+        const left = Math.max(0, Math.floor(((b.x0 - padX - crop.x0) / cw) * canvas.width))
+        const top = Math.max(0, Math.floor(((b.y0 - padY - crop.y0) / ch) * canvas.height))
+        const width = Math.min(canvas.width - left, Math.ceil(((b.x1 - b.x0 + 2 * padX) / cw) * canvas.width))
+        const height = Math.min(canvas.height - top, Math.ceil(((b.y1 - b.y0 + 2 * padY) / ch) * canvas.height))
+        if (width < 8 || height < 8) continue
+        const { data } = await worker.recognize(canvas, { rectangle: { left, top, width, height } })
+        const third = squash((data as { text?: string }).text ?? '')
+        const v = votes.get(l)!
+        v[0] += editDistance(squash(l.text), third)
+        v[1] += editDistance(squash(l.alt!.text), third)
+      }
+    }
+  } finally {
+    await worker.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT })
+  }
+  for (const l of disputed) {
+    const alt = l.alt!
+    const [dMain, dAlt] = votes.get(l)!
+    const useAlt = dAlt < dMain || (dAlt === dMain && differingConfidence(alt, l) > differingConfidence(l, alt))
+    if (useAlt) Object.assign(l, { ...alt, box: l.box, y: l.y, height: l.height })
+  }
+  for (const l of lines) delete l.alt
+}
+
+/** Average confidence of the words in `a` that `b` read differently. */
+function differingConfidence(a: ReadLine, b: ReadLine): number {
+  const other = new Set((b.words ?? []).map((w) => w.text))
+  const diff = (a.words ?? []).filter((w) => !other.has(w.text))
+  return diff.length ? diff.reduce((n, w) => n + w.confidence, 0) / diff.length : a.confidence
 }
 
 async function loadPhoto(file: Blob): Promise<ImageBitmap | HTMLImageElement> {
@@ -248,9 +328,11 @@ export async function readCard(
     if (!best) return { turns: 0, lines: [], clarity: 0, rawText: '' }
     if (opts.quick) return { turns: best.turns, lines: best.result.lines, clarity: best.result.clarity, rawText: best.result.rawText }
     const wide = await run(best.turns, 1200, 1.6, best.polarity)
+    const lines = mergeLines([best.result.lines, wide.lines])
+    await settleDisputes(worker, photo, best.turns, best.polarity, lines)
     return {
       turns: best.turns,
-      lines: mergeLines([best.result.lines, wide.lines]),
+      lines,
       clarity: best.result.clarity,
       rawText: best.result.rawText + '\n' + wide.rawText,
     }

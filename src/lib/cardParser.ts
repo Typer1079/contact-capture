@@ -1,4 +1,4 @@
-import { zipMatchesState } from './verify'
+import { editDistance, initialsMatchDomain, zipMatchesState } from './verify'
 
 /**
  * Turns the text recognized on a business card into contact fields.
@@ -78,7 +78,7 @@ export function splitSuite(street: string): [string, string] {
 }
 
 const TITLE_WORDS =
-  /\b(ceo|cfo|coo|cto|cio|cmo|vp|svp|evp|president|vice|director|manager|mgr|engineer|developer|designer|consultant|founder|co-founder|owner|partner|principal|associate|analyst|specialist|coordinator|officer|representative|rep|executive|agent|realtor|broker|advisor|adviser|attorney|lawyer|counsel|accountant|cpa|architect|administrator|admin|assistant|supervisor|superintendent|lead|head|chief|sales|marketing|account|technician|nurse|doctor|dds|md|phd|recruiter|strategist|producer|editor|instructor|professor|teacher|pastor|minister|chairman|chair|treasurer|secretary|operations|business development|loan officer|mortgage|insurance|estimator|foreman|inspector|dentist|physician|therapist|pharmacist|planner)\b/i
+  /\b(ceo|cfo|coo|cto|cio|cmo|vp|svp|evp|president|vice|director|manager|mgr|engineer|developer|designer|consultant|founder|co-founder|owner|partner|principal|associate|analyst|specialist|coordinator|officer|representative|rep|executive|agent|realtor|broker|advisor|adviser|attorney|lawyer|counsel|accountant|cpa|architect|administrator|admin|assistant|supervisor|superintendent|lead|head|chief|sales|marketing|account|technician|nurse|doctor|dds|md|phd|recruiter|strategist|producer|editor|instructor|professor|teacher|pastor|minister|chairman|chair|treasurer|secretary|operations|business development|loan officer|mortgage|insurance|estimator|foreman|inspector|dentist|physician|therapist|pharmacist|planner|investigator|examiner|adjuster|appraiser|auditor|detective|surveyor|paralegal|scientist|researcher|underwriter|controller|bookkeeper|clerk)\b/i
 
 const COMPANY_WORDS =
   /\b(inc|llc|l\.l\.c|ltd|llp|pllc|lp|corp|corporation|co|company|group|holdings|partners|associates|solutions|services|systems|technologies|technology|tech|industries|international|enterprises|consulting|labs|studio|agency|bank|realty|properties|construction|energy|logistics|insurance|financial|capital|ventures|clinic|hospital|church|university|college|school|foundation|restaurant|cafe|plumbing|roofing|electric|law firm|dental|medical)(?![a-z-])/i
@@ -95,6 +95,18 @@ const CITY_STATE_ZIP = new RegExp(`^(.*?)[,\\s]+(${STATES})\\.?\\s+([\\dSOIl]{4,
 // Same shape, but any two letters as the state (for OCR misreads like "NN" for "MN").
 const CITY_ANY_STATE_ZIP = /^(.*?[A-Za-z].*?)[,\s]+([A-Za-z]{2})\.?\s+([\dSOIl]{4,6})(?:[-\s]?(\d{4}))?\s*$/
 const STATE_SET = new Set(STATES.split('|'))
+const STATE_NAMES: Record<string, string> = {
+  alabama: 'AL', alaska: 'AK', arizona: 'AZ', arkansas: 'AR', california: 'CA', colorado: 'CO', connecticut: 'CT',
+  delaware: 'DE', florida: 'FL', georgia: 'GA', hawaii: 'HI', idaho: 'ID', illinois: 'IL', indiana: 'IN', iowa: 'IA',
+  kansas: 'KS', kentucky: 'KY', louisiana: 'LA', maine: 'ME', maryland: 'MD', massachusetts: 'MA', michigan: 'MI',
+  minnesota: 'MN', mississippi: 'MS', missouri: 'MO', montana: 'MT', nebraska: 'NE', nevada: 'NV',
+  'new hampshire': 'NH', 'new jersey': 'NJ', 'new mexico': 'NM', 'new york': 'NY', 'north carolina': 'NC',
+  'north dakota': 'ND', ohio: 'OH', oklahoma: 'OK', oregon: 'OR', pennsylvania: 'PA', 'rhode island': 'RI',
+  'south carolina': 'SC', 'south dakota': 'SD', tennessee: 'TN', texas: 'TX', utah: 'UT', vermont: 'VT',
+  virginia: 'VA', washington: 'WA', 'west virginia': 'WV', wisconsin: 'WI', wyoming: 'WY',
+}
+// "Dallas, Texas 75203" -> "Dallas, TX 75203" (only right before a ZIP, so "Texas Instruments" is left alone).
+const STATE_NAME_ZIP = new RegExp(`\\b(${Object.keys(STATE_NAMES).sort((a, b) => b.length - a.length).join('|')})\\.?(?=,?\\s+\\d{5}\\b)`, 'gi')
 // Letters OCR commonly confuses in capitals.
 const LOOKALIKE: Record<string, string> = {
   N: 'MHW', M: 'NHW', H: 'NM', W: 'VMN', V: 'WUY', U: 'VO', O: 'DQCU', D: 'O', Q: 'O', C: 'GO', G: 'C',
@@ -131,7 +143,8 @@ const URL_RE = /\b((?:https?:\/\/)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com
 // US/Canada numbers, with optional +1, separators, and extension.
 const PHONE = /(?:\+?1[\s.-]*)?\(?\b(\d{3})\)?[\s.\-–]*(\d{3})[\s.\-–]*(\d{4})\b(?:\s*(?:x|ext\.?|extension)\s*(\d{1,6}))?/gi
 
-type PhoneKind = 'mobile' | 'direct' | 'office' | 'fax' | 'other'
+type PhoneKind = 'mobile' | 'direct' | 'office' | 'fax' | 'other' | 'toll-free'
+const TOLL_FREE = /^8(00|33|44|55|66|77|88)$/
 
 function phoneKind(before: string): PhoneKind {
   const label = before.toLowerCase().slice(-14)
@@ -157,6 +170,9 @@ function repairLine(t: string): string {
     .replace(/(@[\w-]+)\s*\.\s*(com|net|org|io|co|us|biz|edu|gov)\b/gi, '$1.$2')
     .replace(/(www\.[\w-]+)\s+\.\s*(com|net|org|io|co|us|biz|edu|gov)\b/gi, '$1.$2')
     .replace(/\s{2,}/g, ' ')
+    .replace(STATE_NAME_ZIP, (n) => STATE_NAMES[n.toLowerCase().replace(/\s+/g, ' ').replace(/\.$/, '')] ?? n)
+    // Square/round bullets between parts are often read as "m", "■" or "•": "Lane ■ Dallas".
+    .replace(/(\S)\s+[m■▪●•◆]\s+(?=[A-Z][a-z])/g, (all, ch: string) => (/\d/.test(t) ? `${ch} • ` : all))
     .trim()
 }
 
@@ -168,7 +184,16 @@ function titleCaseIfShouting(s: string): string {
   return s.replace(/\b[A-Za-z]{2,5}\b/g, (w) => (KEEP_CAPS.has(w.toUpperCase()) ? w.toUpperCase() : w))
 }
 
+const SUFFIX_RE = /^(jr|sr|ii|iii|iv|phd|md|cpa|pe|esq|mba|rn)\.?$/i
+/** "A. Scott Leake, IAAI-CFI" -> ["A. Scott Leake", "IAAI-CFI"]. Common suffixes (Jr., CPA) stay with the name. */
+function splitCredentials(t: string): [string, string] {
+  const m = t.match(/^(.*?[A-Za-z]),\s*([A-Z][A-Z0-9-]{1,}(?:[\s,/]+[A-Z][A-Z0-9-]{1,})*)\s*$/)
+  if (!m || m[2].split(/[\s,/]+/).every((w) => SUFFIX_RE.test(w))) return [t, '']
+  return [m[1].trim(), m[2].trim()]
+}
+
 function looksLikeName(t: string): boolean {
+  t = splitCredentials(t)[0]
   if (/\d|@|www\.|\.com/i.test(t)) return false
   const words = t.replace(/,?\s+(jr|sr|ii|iii|iv|phd|md|cpa|pe|esq|mba|rn)\.?$/i, '').split(/\s+/).filter(Boolean)
   if (words.length < 2 || words.length > 4) return false
@@ -199,6 +224,8 @@ function splitName(full: string): { first: string; last: string } {
   const core = suffixIdx > 0 ? words.slice(0, suffixIdx) : words
   const suffix = suffixIdx > 0 ? ' ' + words.slice(suffixIdx).join(' ') : ''
   if (core.length === 1) return { first: core[0], last: suffix.trim() }
+  // "A. Scott Leake": a leading initial goes with the first name.
+  if (core.length >= 3 && /^[A-Z]\.?$/i.test(core[0])) return { first: `${core[0]} ${core[1]}`, last: core.slice(2).join(' ') + suffix }
   return { first: core[0], last: core.slice(1).join(' ').replace(/^([A-Z]\.?)\s+/, '') + suffix }
 }
 
@@ -362,16 +389,21 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
     let m: RegExpExecArray | null
     let found = false
     while ((m = PHONE.exec(l.text))) {
-      phones.push({ kind: phoneKind(l.text.slice(0, m.index)), value: formatPhone(m) })
+      let kind = phoneKind(l.text.slice(0, m.index))
+      // A toll-free number is never a personal line (a bullet read as "m" isn't "mobile").
+      if (TOLL_FREE.test(m[1]) && kind !== 'fax') kind = 'toll-free'
+      // A number printed on its own line, with no label, is usually the person's own.
+      else if (kind === 'other' && l.text.replace(m[0], '').replace(/[^A-Za-z0-9]/g, '').length === 0) kind = 'direct'
+      phones.push({ kind, value: formatPhone(m) })
       found = true
     }
     if (found) used.add(i)
   })
-  const rank: PhoneKind[] = ['mobile', 'direct', 'office', 'other']
+  const rank: PhoneKind[] = ['mobile', 'direct', 'office', 'other', 'toll-free']
   const best = rank.map((k) => phones.find((p) => p.kind === k)).find(Boolean)
   if (best) out.phone = best.value
   for (const p of phones) {
-    if (p !== best && p.value !== best?.value) extras.push(`${p.kind === 'other' ? 'Phone' : p.kind[0].toUpperCase() + p.kind.slice(1)}: ${p.value}`)
+    if (p !== best && p.value !== best?.value) extras.push(`${p.kind === 'other' ? 'Phone' : p.kind === 'toll-free' ? 'Toll-free' : p.kind[0].toUpperCase() + p.kind.slice(1)}: ${p.value}`)
   }
 
   // 3. Address: "City, ST 77479" plus the street line(s) above it.
@@ -468,7 +500,7 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
   // sits next to the title, big text, near the top.
   const maxH = Math.max(1, ...lines.map((l) => l.height))
   const emailName = emailLocal ? nameFromEmail(emailLocal) : null
-  type Cand = { idx: number[]; first: string; last: string; score: number }
+  type Cand = { idx: number[]; first: string; last: string; score: number; creds?: string }
   const cands: Cand[] = []
   const scoreOf = (text: string, idx: number[], height: number) => {
     let score = 0
@@ -484,8 +516,9 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
     if (used.has(i) || i === titleIdx || !looksLikeName(l.text) || COMPANY_WORDS.test(l.text)) return
     if (TITLE_WORDS.test(l.text) && !nameMatchesEmail(l.text, emailLocal)) return
     if (l.text.split(/\s+/).every((w) => NOT_A_NAME.test(w))) return
-    const { first, last } = splitName(titleCaseIfShouting(l.text))
-    cands.push({ idx: [i], first, last, score: scoreOf(l.text, [i], l.height) })
+    const [nameText, creds] = splitCredentials(l.text)
+    const { first, last } = splitName(titleCaseIfShouting(nameText))
+    cands.push({ idx: [i], first, last, creds, score: scoreOf(nameText, [i], l.height) })
   })
   for (let i = 0; i + 1 < lines.length; i++) {
     const a = lines[i]
@@ -501,6 +534,7 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
   if (pick && !out.first_name && !out.last_name && (pick.score >= 1 || !emailName)) {
     out.first_name = pick.first
     out.last_name = pick.last
+    if (pick.creds) extras.push(`Credentials: ${pick.creds}`)
     pick.idx.forEach((i) => used.add(i))
   }
   // Fall back to (or confirm with) the email: "daniel.quam@" -> Daniel Quam.
@@ -566,6 +600,14 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
     if (companyIdx >= 0) {
       out.company = companyCase(lines[companyIdx].text)
       used.add(companyIdx)
+      // Logo-style names split over two lines ("Unified" / "Investigations & Sciences, Inc."):
+      // join them when together their initials spell the domain ("uis-usa.com").
+      const a = companyIdx - 1
+      if (dw && a >= 0 && !used.has(a) && !/\d/.test(lines[a].text) && lines[a].text.trim().split(/\s+/).length <= 3 &&
+          !initialsMatchDomain(out.company, dw) && initialsMatchDomain(`${lines[a].text} ${out.company}`, dw)) {
+        out.company = companyCase(`${lines[a].text.trim()} ${lines[companyIdx].text.trim()}`)
+        used.add(a)
+      }
     } else if (dw) {
       out.company = cap(dw)
     }
@@ -584,9 +626,17 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
 
   // 7. Everything left goes to Notes so nothing is lost.
   // Skip tiny fragments (logo bits, OCR noise); keep anything with real content.
-  const leftovers = lines
-    .filter((l, i) => !used.has(i) && l.text.replace(/[^A-Za-z0-9]/g, '').length >= 4)
-    .map((l) => l.text)
+  // Also skip a line that's a near-copy of one already used (two OCR passes read it slightly differently).
+  const sq = (t: string) => t.toLowerCase().replace(/[^a-z0-9]/g, '')
+  const seen = lines.filter((_, i) => used.has(i)).map((l) => sq(l.text))
+  const leftovers: string[] = []
+  lines.forEach((l, i) => {
+    const q = sq(l.text)
+    if (used.has(i) || q.length < 4) return
+    if (seen.some((p) => p.length >= 6 && editDistance(p, q) <= Math.max(1, Math.floor(Math.max(p.length, q.length) * 0.1)))) return
+    seen.push(q)
+    leftovers.push(l.text)
+  })
   const noteParts = [...new Set(extras), ...(leftovers.length ? [`Other text on card: ${leftovers.join(' / ')}`] : [])]
   out.notes = noteParts.join('\n')
   return out

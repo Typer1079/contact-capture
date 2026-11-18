@@ -144,4 +144,30 @@ describe('parseBusinessCard', () => {
     const r = parseBusinessCard(L(['Pat Kim', 30], 'Quality you can trust since 1998', 'pat@kimco.com'))
     expect(r.notes).toContain('Quality you can trust since 1998')
   })
+
+  it('reads a card with a two-line logo name, bullets, a full state name and credentials', () => {
+    // Lines as the OCR read Daniel's UIS card (both passes merged, with their slips).
+    const r = parseBusinessCard(L(['34', 21], ['Unified', 73], ['Investigations & Sciences, Inc.', 62],
+      ['223 E. Greenbriar Lane m Dallas, Texas 75203', 53], ['923 E. Greenbriar Lane m Dallas, Texas 75203', 41],
+      ['Office 214-946-8989 m 1-800-615-4840', 33], ['Fax 214-946-8586 m www.uis-usa.com', 31],
+      ['aleake @uis-usa.com', 35], ['San Antonio, TX', 31], ['A. Scott Leake, IAAI-CFI', 39], ['A. Scott Leake, JAAI-CFI', 39],
+      ['210-659-8677', 29], ['Senior Investigator', 33]))
+    expect(r).toMatchObject({
+      first_name: 'A. Scott', last_name: 'Leake', title: 'Senior Investigator',
+      company: 'Unified Investigations & Sciences, Inc.', email: 'aleake@uis-usa.com', phone: '(210) 659-8677',
+      street: '223 E. Greenbriar Lane', city: 'Dallas', region: 'TX', postal_code: '75203',
+    })
+    expect(r.notes).toContain('Office: (214) 946-8989')
+    expect(r.notes).toContain('Toll-free: (800) 615-4840')
+    expect(r.notes).toContain('Fax: (214) 946-8586')
+    expect(r.notes).toContain('Credentials: IAAI-CFI')
+    expect(r.notes).not.toMatch(/Mobile|923 E|JAAI/)
+  })
+
+  it('keeps "Texas" in a company name when no ZIP follows it', () => {
+    const r = parseBusinessCard(L(['Lee Park', 40], 'Texas Instruments', '12500 TI Blvd, Dallas, TX 75243', 'lee@ti.com'))
+    expect(r).toMatchObject({ city: 'Dallas', region: 'TX' })
+    expect(JSON.stringify(r)).toContain('Texas Instruments')
+  })
 })
+
