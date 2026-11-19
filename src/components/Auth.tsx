@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { supabase } from '../lib/supabase'
+import { passkeyMessage, passkeyOnDevice, passkeysSupported, signInWithPasskey, wasCancelled } from '../lib/passkeys'
 
 type Mode = 'signin' | 'signup' | 'reset'
 
@@ -9,6 +10,17 @@ export default function Auth() {
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<{ kind: 'error' | 'info'; text: string } | null>(null)
+
+  const canPasskey = passkeysSupported()
+
+  async function passkeySignIn() {
+    setBusy(true)
+    setMessage(null)
+    const { error } = await signInWithPasskey()
+    setBusy(false)
+    // Success: the app switches to the home screen by itself (auth state change).
+    if (error && !wasCancelled(error)) setMessage({ kind: 'error', text: passkeyMessage(error, 'signin') })
+  }
 
   const redirectTo = window.location.origin + import.meta.env.BASE_URL
 
@@ -44,6 +56,19 @@ export default function Auth() {
       <p className="mt-1 text-sm text-slate-500">
         {mode === 'signin' ? 'Sign in to your saved contacts.' : mode === 'signup' ? 'Create your account.' : 'Reset your password.'}
       </p>
+
+      {mode === 'signin' && canPasskey && (
+        <>
+          <button type="button" className={`${passkeyOnDevice() ? 'btn-primary' : 'btn-secondary'} mt-6 w-full`} disabled={busy} onClick={passkeySignIn}>
+            Sign in with Face ID
+          </button>
+          <div className="mt-6 flex items-center gap-3 text-xs text-slate-400">
+            <span className="h-px flex-1 bg-slate-200" />
+            or use your password
+            <span className="h-px flex-1 bg-slate-200" />
+          </div>
+        </>
+      )}
 
       <form onSubmit={submit} method="post" action="#" className="mt-6 space-y-4">
         <div>
@@ -83,7 +108,7 @@ export default function Auth() {
             {message.text}
           </p>
         )}
-        <button className="btn-primary w-full" disabled={busy}>
+        <button className={`${mode === 'signin' && canPasskey && passkeyOnDevice() ? 'btn-secondary' : 'btn-primary'} w-full`} disabled={busy}>
           {busy ? 'Please wait…' : mode === 'signin' ? 'Sign in' : mode === 'signup' ? 'Create account' : 'Send reset link'}
         </button>
       </form>

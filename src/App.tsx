@@ -4,6 +4,7 @@ import Auth from './components/Auth'
 import ContactForm from './components/ContactForm'
 import ContactList from './components/ContactList'
 import ErrorBoundary from './components/ErrorBoundary'
+import { PasskeyOffer, PasskeySettings } from './components/Passkeys'
 import { loadFresh, takeResumeScreen } from './lib/freshLoad'
 import type { LicenseContact } from './lib/aamva'
 import { splitSuite, type CardContact } from './lib/cardParser'
@@ -27,6 +28,7 @@ type View =
   | { name: 'list' }
   | { name: 'scan' }
   | { name: 'card' }
+  | { name: 'passkeys' }
   | { name: 'form'; draft: ContactDraft; editing?: Contact; autoFilled?: string[]; uncertain?: string[] }
 
 const ADDRESS_KEYS = ['street', 'suite', 'city', 'region', 'postal_code', 'country']
@@ -177,7 +179,7 @@ export default function App() {
   if (!session) return <Auth />
 
   const title =
-    view.name === 'home' ? 'Contact Capture' : view.name === 'list' ? 'Saved contacts' : view.name === 'scan' ? 'Scan license' : view.name === 'card' ? 'Scan business card' : view.editing ? 'Edit contact' : 'New contact'
+    view.name === 'home' ? 'Contact Capture' : view.name === 'list' ? 'Saved contacts' : view.name === 'scan' ? 'Scan license' : view.name === 'card' ? 'Scan business card' : view.name === 'passkeys' ? 'Sign-in options' : view.editing ? 'Edit contact' : 'New contact'
 
   return (
     <div className="mx-auto flex min-h-dvh max-w-lg flex-col">
@@ -188,12 +190,13 @@ export default function App() {
           <button className="w-14 text-left text-sm font-medium text-slate-600" onClick={() => setView({ name: 'home' })}>‹ Home</button>
         )}
         <h1 className="text-base font-semibold">{title}</h1>
-        <button className="w-14 text-right text-sm text-slate-500" onClick={() => supabase.auth.signOut()}>Sign out</button>
+        <button className="w-14 text-right text-sm text-slate-500" onClick={() => { setView({ name: 'home' }); void supabase.auth.signOut() }}>Sign out</button>
       </header>
 
       <main className="flex-1 px-4 py-4">
         {view.name === 'home' && (
           <div className="space-y-3">
+            <PasskeyOffer onManage={() => setView({ name: 'passkeys' })} />
             <button className="card flex w-full items-center gap-4 text-left hover:bg-slate-50" onClick={() => setView({ name: 'scan' })}>
               <span className="flex size-12 items-center justify-center rounded-xl bg-slate-900 text-xl text-white" aria-hidden>▤</span>
               <span>
@@ -225,9 +228,14 @@ export default function App() {
             <button className="btn-secondary w-full" onClick={() => setView({ name: 'list' })}>
               Saved contacts ({contacts.length})
             </button>
+            <button className="block w-full pt-1 text-center text-sm text-slate-500 underline" onClick={() => setView({ name: 'passkeys' })}>
+              Sign-in options · Face ID
+            </button>
             <p className="pt-2 text-center text-xs text-slate-400">Test version · no CRM sync · license number and birth date only with opt-in</p>
           </div>
         )}
+
+        {view.name === 'passkeys' && <PasskeySettings />}
 
         {view.name === 'list' && (
           <>
