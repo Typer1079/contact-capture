@@ -3,6 +3,8 @@ import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import Auth from './components/Auth'
 import ContactForm from './components/ContactForm'
 import ContactList from './components/ContactList'
+import ErrorBoundary from './components/ErrorBoundary'
+import { loadFresh, takeResumeScreen } from './lib/freshLoad'
 import type { LicenseContact } from './lib/aamva'
 import { splitSuite, type CardContact } from './lib/cardParser'
 import type { IdConsent } from './components/CardScanner'
@@ -15,8 +17,9 @@ import { toVCard, vcardFileName } from './lib/vcard'
 // The scanners load separately from the main app. The card scanner's screen is fetched in the
 // background shortly after sign-in so the camera opens instantly when tapped; the large text
 // reader itself still only downloads once the camera is showing.
-const loadCardScanner = () => import('./components/CardScanner')
-const LicenseScanner = lazy(() => import('./components/LicenseScanner'))
+// loadFresh: if a newer version was published while the app was open, reload into it and reopen the scanner.
+const loadCardScanner = loadFresh(() => import('./components/CardScanner'), 'card')
+const LicenseScanner = lazy(loadFresh(() => import('./components/LicenseScanner'), 'scan'))
 const CardScanner = lazy(loadCardScanner)
 
 type View =
@@ -70,7 +73,10 @@ function draftFromScan(
 export default function App() {
   const [session, setSession] = useState<Session | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
-  const [view, setView] = useState<View>({ name: 'home' })
+  const [view, setView] = useState<View>(() => {
+    const resume = takeResumeScreen()
+    return resume === 'card' || resume === 'scan' ? { name: resume } : { name: 'home' }
+  })
   const [contacts, setContacts] = useState<Contact[]>([])
   const [loading, setLoading] = useState(false)
   const [toast, setToast] = useState<{ text: string; contact?: Contact } | null>(null)
@@ -237,15 +243,19 @@ export default function App() {
         )}
 
         {view.name === 'scan' && (
-          <Suspense fallback={<p className="py-8 text-center text-sm text-slate-500">Loading scanner…</p>}>
-            <LicenseScanner onResult={handleLicense} onCancel={() => setView({ name: 'home' })} />
-          </Suspense>
+          <ErrorBoundary key="scan" onHome={() => setView({ name: 'home' })}>
+            <Suspense fallback={<p className="py-8 text-center text-sm text-slate-500">Loading scanner…</p>}>
+              <LicenseScanner onResult={handleLicense} onCancel={() => setView({ name: 'home' })} />
+            </Suspense>
+          </ErrorBoundary>
         )}
 
         {view.name === 'card' && (
-          <Suspense fallback={<p className="py-8 text-center text-sm text-slate-500">Loading scanner…</p>}>
-            <CardScanner onResult={handleCard} onCancel={() => setView({ name: 'home' })} />
-          </Suspense>
+          <ErrorBoundary key="card" onHome={() => setView({ name: 'home' })}>
+            <Suspense fallback={<p className="py-8 text-center text-sm text-slate-500">Loading scanner…</p>}>
+              <CardScanner onResult={handleCard} onCancel={() => setView({ name: 'home' })} />
+            </Suspense>
+          </ErrorBoundary>
         )}
 
         {view.name === 'form' && (
