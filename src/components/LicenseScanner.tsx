@@ -1,4 +1,3 @@
-import { parkCamera, takeParkedCamera } from '../lib/cameraKeeper'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { parseAamva, type LicenseContact } from '../lib/aamva'
 import { DESKEW_ANGLES, initBarcodeReader, scanImage, scanPhoto, type ScanResult } from '../lib/barcode'
@@ -25,9 +24,7 @@ export default function LicenseScanner({ onResult, onCancel }: Props) {
   const doneRef = useRef(false)
 
   const stopCamera = useCallback(() => {
-    if (videoRef.current) videoRef.current.srcObject = null
-    // Kept connected a little while so the next scan doesn't ask for the camera again.
-    parkCamera(streamRef.current)
+    streamRef.current?.getTracks().forEach((t) => t.stop())
     streamRef.current = null
   }, [])
 
@@ -63,14 +60,12 @@ export default function LicenseScanner({ onResult, onCancel }: Props) {
       setStatus('Starting camera…')
       try {
         await initBarcodeReader()
-        const stream =
-          takeParkedCamera() ??
-          (await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-            audio: false,
-          }))
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+          audio: false,
+        })
         if (cancelled) {
-          parkCamera(stream)
+          stream.getTracks().forEach((t) => t.stop())
           return
         }
         streamRef.current = stream

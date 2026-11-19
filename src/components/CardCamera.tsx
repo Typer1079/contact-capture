@@ -1,4 +1,3 @@
-import { parkCamera, takeParkedCamera } from '../lib/cameraKeeper'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { analyzeFrame, sharpness, toGray, type Gray, type Hint, type Rect } from '../lib/frameCheck'
 
@@ -176,14 +175,7 @@ export default function CardCamera({ onCapture, onChoosePhoto, onCancel, onUnava
     layoutRef.current = layout
   })
 
-  /** Done with the camera: keep it connected a little while for the next scan (see cameraKeeper). */
   const stop = useCallback(() => {
-    if (videoRef.current) videoRef.current.srcObject = null
-    parkCamera(streamRef.current)
-    streamRef.current = null
-  }, [])
-  /** Switching to a different camera request: really turn this one off. */
-  const stopNow = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop())
     streamRef.current = null
   }, [])
@@ -257,14 +249,12 @@ export default function CardCamera({ onCapture, onChoosePhoto, onCancel, onUnava
       const i = order[step]
       current = i
       window.clearTimeout(watchdog)
-      stopNow()
+      stop()
       setCam({ phase: 'requesting', try: step + 1 })
       let stream: MediaStream
       const asked = performance.now()
-      // The camera from a scan a moment ago is still connected: reuse it (no new permission prompt).
-      const warm = step === 0 ? takeParkedCamera() : null
       try {
-        stream = warm ?? (await navigator.mediaDevices.getUserMedia(requests[i]))
+        stream = await navigator.mediaDevices.getUserMedia(requests[i])
         granted = performance.now() - asked
       } catch (err) {
         if (cancelled) return
@@ -278,7 +268,7 @@ export default function CardCamera({ onCapture, onChoosePhoto, onCancel, onUnava
         return
       }
       if (cancelled) {
-        parkCamera(stream)
+        stream.getTracks().forEach((t) => t.stop())
         return
       }
       streamRef.current = stream
@@ -325,7 +315,7 @@ export default function CardCamera({ onCapture, onChoosePhoto, onCancel, onUnava
       video.removeEventListener('resize', live)
       stop()
     }
-  }, [attempt, stop, stopNow])
+  }, [attempt, stop])
 
   // Count seconds while the camera is starting, so a slow start is visible.
   useEffect(() => {
