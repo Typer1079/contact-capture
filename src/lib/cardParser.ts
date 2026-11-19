@@ -21,8 +21,12 @@ export interface CardContact {
   last_name: string
   company: string
   title: string
+  department: string
   email: string
+  /** The main number (same as phones[0]), kept for the accuracy checks. */
   phone: string
+  /** Every number on the card, main one first, each with its label and extension. */
+  phones: { label: string; number: string; ext: string }[]
   street: string
   suite: string
   city: string
@@ -41,6 +45,9 @@ export interface CardContact {
   /** True when the photo looks like a driver's license / ID (DOB or license number found). */
   is_id: boolean
 }
+
+/** "Special Investigations Unit", "Claims Department", "Division of Water": a department, not a name. */
+const DEPARTMENT_WORDS = /\b(unit|department|dept\.?|division|bureau|section|branch)\b/i
 
 const EYE_CODES: Record<string, string> = { BLK: 'Black', BLU: 'Blue', BRO: 'Brown', BRN: 'Brown', GRY: 'Gray', GRN: 'Green', HAZ: 'Hazel', MAR: 'Maroon', PNK: 'Pink' }
 
@@ -141,7 +148,7 @@ const PO_BOX = /^\s*p\.?\s*o\.?\s*box\s+\d+/i
 const EMAIL = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i
 const URL_RE = /\b((?:https?:\/\/)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|co|us|biz|info|edu|gov|ai|app|dev|me|tv|law|church|realtor|health)(?:\/[^\s]*)?)\b/i
 // US/Canada numbers, with optional +1, separators, and extension.
-const PHONE = /(?:\+?1[\s.-]*)?\(?\b(\d{3})\)?[\s.\-–]*(\d{3})[\s.\-–]*(\d{4})\b(?:\s*(?:x|ext\.?|extension)\s*(\d{1,6}))?/gi
+const PHONE = /(?:\+?1[\s.-]*)?\(?\b(\d{3})\)?[\s.\-–]*(\d{3})[\s.\-–]*(\d{4})\b(?:\s*,?\s*(?:x|ext\.?|extension)\s*[:.#]?\s*(\d{1,6}))?/gi
 
 type PhoneKind = 'mobile' | 'direct' | 'office' | 'fax' | 'other' | 'toll-free'
 const TOLL_FREE = /^8(00|33|44|55|66|77|88)$/
@@ -160,6 +167,8 @@ function formatPhone(m: RegExpExecArray): string {
   const base = `(${m[1]}) ${m[2]}-${m[3]}`
   return m[4] ? `${base} x${m[4]}` : base
 }
+
+const PHONE_LABEL: Record<PhoneKind, string> = { mobile: 'Mobile', direct: 'Direct', office: 'Work', fax: 'Fax', other: 'Work', 'toll-free': 'Toll-free' }
 
 /** Fixes common OCR slips: spaced-out "@", "(at)", stray spaces around dots in emails. */
 function repairLine(t: string): string {
@@ -186,9 +195,9 @@ function titleCaseIfShouting(s: string): string {
 
 const SUFFIX_RE = /^(jr|sr|ii|iii|iv|phd|md|cpa|pe|esq|mba|rn)\.?$/i
 /** "A. Scott Leake, IAAI-CFI" -> ["A. Scott Leake", "IAAI-CFI"]. Common suffixes (Jr., CPA) stay with the name. */
-function splitCredentials(t: string): [string, string] {
+function splitCredentials(t: string, keepSuffixes = true): [string, string] {
   const m = t.match(/^(.*?[A-Za-z]),\s*([A-Z][A-Z0-9-]{1,}(?:[\s,/]+[A-Z][A-Z0-9-]{1,})*)\s*$/)
-  if (!m || m[2].split(/[\s,/]+/).every((w) => SUFFIX_RE.test(w))) return [t, '']
+  if (!m || (keepSuffixes && m[2].split(/[\s,/]+/).every((w) => SUFFIX_RE.test(w)))) return [t, '']
   return [m[1].trim(), m[2].trim()]
 }
 
@@ -309,7 +318,7 @@ function companyCase(name: string): string {
 
 export function parseBusinessCard(input: CardLine[]): CardContact {
   const out: CardContact = {
-    first_name: '', last_name: '', company: '', title: '', email: '', phone: '',
+    first_name: '', last_name: '', company: '', title: '', department: '', email: '', phone: '', phones: [],
     street: '', suite: '', city: '', region: '', postal_code: '', country: '',
     hire_date: '', home_state: '', dob: '', dl_number: '', sex: '', height: '', eye_color: '',
     notes: '', is_id: false,
@@ -382,7 +391,7 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
   })
 
   // 2. Phones: prefer mobile, then direct, then office. Fax and the rest go to Notes.
-  const phones: { kind: PhoneKind; value: string }[] = []
+  const phones: { kind: PhoneKind; value: string; number: string; ext: string }[] = []
   lines.forEach((l, i) => {
     if (used.has(i)) return
     PHONE.lastIndex = 0
@@ -394,7 +403,7 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
       if (TOLL_FREE.test(m[1]) && kind !== 'fax') kind = 'toll-free'
       // A number printed on its own line, with no label, is usually the person's own.
       else if (kind === 'other' && l.text.replace(m[0], '').replace(/[^A-Za-z0-9]/g, '').length === 0) kind = 'direct'
-      phones.push({ kind, value: formatPhone(m) })
+      phones.push({ kind, value: formatPhone(m), number: `(${m[1]}) ${m[2]}-${m[3]}`, ext: m[4] ?? '' })
       found = true
     }
     if (found) used.add(i)
@@ -402,8 +411,13 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
   const rank: PhoneKind[] = ['mobile', 'direct', 'office', 'other', 'toll-free']
   const best = rank.map((k) => phones.find((p) => p.kind === k)).find(Boolean)
   if (best) out.phone = best.value
-  for (const p of phones) {
-    if (p !== best && p.value !== best?.value) extras.push(`${p.kind === 'other' ? 'Phone' : p.kind === 'toll-free' ? 'Toll-free' : p.kind[0].toUpperCase() + p.kind.slice(1)}: ${p.value}`)
+  // All numbers go in the phone list: the main one first, then by kind, fax last; no repeats.
+  const order: PhoneKind[] = [...rank, 'fax']
+  const seenNumbers = new Set<string>()
+  for (const p of [...phones].sort((a, b) => (a === best ? -1 : b === best ? 1 : order.indexOf(a.kind) - order.indexOf(b.kind)))) {
+    if (seenNumbers.has(p.value)) continue
+    seenNumbers.add(p.value)
+    out.phones.push({ label: PHONE_LABEL[p.kind], number: p.number, ext: p.ext })
   }
 
   // 3. Address: "City, ST 77479" plus the street line(s) above it.
@@ -492,6 +506,13 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
     }
   }
 
+  // 3b. Department: "Special Investigations Unit" (would otherwise look like a three-word name).
+  const deptIdx = lines.findIndex((l, i) => !used.has(i) && DEPARTMENT_WORDS.test(l.text) && !/\d|@/.test(l.text) && !COMPANY_WORDS.test(l.text) && l.text.length <= 60)
+  if (deptIdx >= 0) {
+    out.department = titleCaseIfShouting(lines[deptIdx].text.trim())
+    used.add(deptIdx)
+  }
+
   // 4. Title: a line with job-title words.
   const titleIdx = lines.findIndex((l, i) => !used.has(i) && TITLE_WORDS.test(l.text) && !COMPANY_WORDS.test(l.text) && l.text.length <= 60)
 
@@ -553,7 +574,11 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
     out.last_name = cap(el)
   }
   if (titleIdx >= 0) {
-    out.title = titleCaseIfShouting(lines[titleIdx].text)
+    // "Investigator, MBA, CIF, FCLS": the letters after the title are credentials.
+    const [titleText, creds] = splitCredentials(lines[titleIdx].text, false)
+    out.title = titleCaseIfShouting(titleText)
+    if (creds && !extras.some((e) => e.startsWith('Credentials:'))) extras.push(`Credentials: ${creds}`)
+    else if (creds) extras[extras.findIndex((e) => e.startsWith('Credentials:'))] += `, ${creds}`
     used.add(titleIdx)
   }
 

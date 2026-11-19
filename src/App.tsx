@@ -9,7 +9,7 @@ import type { IdConsent } from './components/CardScanner'
 import { deleteContacts, listContacts, listFieldDefs, saveContact } from './lib/contactsApi'
 import { shareOrDownload } from './lib/download'
 import { isConfigured, supabase } from './lib/supabase'
-import { emptyAddress, emptyDraft, isBlankAddress, type Contact, type ContactDraft, type CustomFieldDef } from './lib/types'
+import { emptyAddress, emptyDraft, isBlankAddress, newId, type Contact, type ContactDraft, type CustomFieldDef } from './lib/types'
 import { toVCard, vcardFileName } from './lib/vcard'
 
 // The scanners load separately from the main app. The card scanner's screen is fetched in the
@@ -31,24 +31,39 @@ const ADDRESS_KEYS = ['street', 'suite', 'city', 'region', 'postal_code', 'count
 /** Scanner field names -> form keys (address parts live inside the address block). */
 function formKeys(fields: string[], draft: ContactDraft): string[] {
   const addrId = draft.addresses[0]?.id
-  return fields.map((f) => (ADDRESS_KEYS.includes(f) && addrId ? `addr:${addrId}:${f}` : f))
+  const phoneId = draft.phones[0]?.id
+  return fields.flatMap((f) => {
+    if (ADDRESS_KEYS.includes(f)) return addrId ? [`addr:${addrId}:${f}`] : []
+    if (f === 'phone') return phoneId ? [`phone:${phoneId}:number`] : []
+    return [f]
+  })
 }
+
+type ScannedPhone = { label: string; number: string; ext: string }
 
 /** Scanned fields -> a draft with one labeled address; returns which fields to highlight. */
 function draftFromScan(
   source: ContactDraft['source'],
-  fields: Partial<ContactDraft> & { street?: string; suite?: string; city?: string; region?: string; postal_code?: string; country?: string },
+  fields: Omit<Partial<ContactDraft>, 'phones'> & {
+    street?: string; suite?: string; city?: string; region?: string; postal_code?: string; country?: string
+    phone?: string; phones?: ScannedPhone[]
+  },
   addressLabel: string,
 ): { draft: ContactDraft; autoFilled: string[] } {
-  const { street: rawStreet = '', suite: rawSuite = '', city = '', region = '', postal_code = '', country = '', ...rest } = fields
+  const {
+    street: rawStreet = '', suite: rawSuite = '', city = '', region = '', postal_code = '', country = '',
+    phone = '', phones: scannedPhones, ...rest
+  } = fields
+  const phones = (scannedPhones ?? (phone ? [{ label: 'Work', number: phone, ext: '' }] : [])).map((p) => ({ id: newId(), ...p }))
   // "100 Example St Apt 4" -> street + suite
   const [street, suite] = rawSuite ? [rawStreet, rawSuite] : splitSuite(rawStreet)
   const address = { ...emptyAddress(addressLabel), street, suite, city, region, postal_code, country }
-  const draft: ContactDraft = { ...emptyDraft(source), ...rest, addresses: isBlankAddress(address) ? [] : [address] }
+  const draft: ContactDraft = { ...emptyDraft(source), ...rest, phones, addresses: isBlankAddress(address) ? [] : [address] }
   const autoFilled = Object.entries(rest)
     .filter(([k, v]) => k !== 'notes' && typeof v === 'string' && v)
     .map(([k]) => k)
   if (!isBlankAddress(address)) autoFilled.push(`addr:${address.id}`)
+  for (const p of phones) autoFilled.push(`phone:${p.id}`)
   return { draft, autoFilled }
 }
 

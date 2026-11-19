@@ -1,4 +1,10 @@
-import type { ContactDraft, CustomFieldDef } from './types'
+import { type ContactDraft, type CustomFieldDef } from './types'
+
+/** Phone labels iPhone and Android understand as standard types. */
+const TEL_TYPES: Record<string, string> = {
+  mobile: 'CELL', cell: 'CELL', work: 'WORK,VOICE', office: 'WORK,VOICE', direct: 'WORK,VOICE', main: 'MAIN',
+  home: 'HOME,VOICE', fax: 'WORK,FAX', 'work fax': 'WORK,FAX', 'home fax': 'HOME,FAX', pager: 'PAGER',
+}
 
 /** Escapes a vCard 3.0 text value. */
 export function vEscape(v: string): string {
@@ -22,11 +28,21 @@ export function toVCard(c: ContactDraft, customDefs: CustomFieldDef[] = []): str
     `N:${vEscape(c.last_name)};${vEscape(c.first_name)};;;`,
     `FN:${vEscape(fn)}`,
   ]
-  if (c.company) lines.push(`ORG:${vEscape(c.company)}`)
+  if (c.company || c.department) lines.push(`ORG:${vEscape(c.company)}${c.department ? `;${vEscape(c.department)}` : ''}`)
   if (c.title) lines.push(`TITLE:${vEscape(c.title)}`)
   if (c.email) lines.push(`EMAIL;TYPE=INTERNET:${vEscape(c.email)}`)
-  if (c.phone) lines.push(`TEL;TYPE=CELL:${vEscape(c.phone)}`)
   let item = 0
+  c.phones.filter((p) => p.number).forEach((p, i) => {
+    // Extensions use the comma "pause" so tapping the number dials the extension too.
+    const value = vEscape(p.ext ? `${p.number},${p.ext}` : p.number).replace(/\\,/g, ',')
+    const type = TEL_TYPES[p.label.trim().toLowerCase()]
+    const pref = i === 0 ? ',PREF' : ''
+    if (type) lines.push(`TEL;TYPE=${type}${pref}:${value}`)
+    else {
+      item++
+      lines.push(`item${item}.TEL${pref ? ';TYPE=PREF' : ''}:${value}`, `item${item}.X-ABLabel:${vEscape(p.label)}`)
+    }
+  })
   for (const a of c.addresses) {
     // ADR parts: PO box ; extended (suite) ; street ; city ; region ; postal code ; country
     const value = `;${vEscape(a.suite)};${vEscape(a.street)};${vEscape(a.city)};${vEscape(a.region)};${vEscape(a.postal_code)};${vEscape(a.country)}`

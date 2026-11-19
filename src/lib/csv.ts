@@ -1,4 +1,4 @@
-import { addressByLabel, streetLine, type Address, type Contact, type CustomFieldDef } from './types'
+import { addressByLabel, phonesLabeled, phoneText, streetLine, type Address, type Contact, type CustomFieldDef, type Phone } from './types'
 
 export interface CsvColumn {
   header: string
@@ -33,6 +33,13 @@ function addressColumns(prefix: string, pick: (c: Contact) => Address | undefine
   ]
 }
 
+const phonesOf = (c: Contact) => c.phones.filter((p) => p.number)
+const maxPhones = (contacts: Contact[]) => Math.max(1, ...contacts.map((c) => phonesOf(c).length))
+const txt = (p: Phone | undefined) => (p ? phoneText(p) : '')
+/** Outlook has fixed phone slots; numbers with other labels go to "Other Phone". */
+const OUTLOOK_TAKEN = ['mobile', 'cell', 'work', 'office', 'direct', 'main', 'fax', 'home']
+const otherPhone = (c: Contact) => phonesOf(c).find((p) => !OUTLOOK_TAKEN.includes(p.label.trim().toLowerCase()))
+
 const otherAddresses = (c: Contact) => c.addresses.filter((a) => !/^(home|work)$/i.test(a.label.trim()))
 
 export const CSV_PRESETS: CsvPreset[] = [
@@ -46,8 +53,13 @@ export const CSV_PRESETS: CsvPreset[] = [
         { header: 'Last Name', value: (c) => c.last_name },
         { header: 'Company', value: (c) => c.company },
         { header: 'Title', value: (c) => c.title },
+        { header: 'Department', value: (c) => c.department },
         { header: 'Email', value: (c) => c.email },
-        { header: 'Phone', value: (c) => c.phone },
+        ...Array.from({ length: maxPhones(contacts) }, (_, i): CsvColumn[] => [
+          { header: `Phone ${i + 1} Label`, value: (c) => phonesOf(c)[i]?.label ?? '' },
+          { header: `Phone ${i + 1}`, value: (c) => phonesOf(c)[i]?.number ?? '' },
+          { header: `Phone ${i + 1} Ext`, value: (c) => phonesOf(c)[i]?.ext ?? '' },
+        ]).flat(),
         ...addressColumns('Work', (c) => addressByLabel(c, 'Work')),
         ...addressColumns('Home', (c) => addressByLabel(c, 'Home')),
         ...Array.from({ length: maxOther }, (_, i) => addressColumns(`Address ${i + 3}`, (c) => otherAddresses(c)[i], true)).flat(),
@@ -81,8 +93,12 @@ export const CSV_PRESETS: CsvPreset[] = [
         { header: 'Last Name', value: (c) => c.last_name },
         { header: 'Organization Name', value: (c) => c.company },
         { header: 'Organization Title', value: (c) => c.title },
+        { header: 'Organization Department', value: (c) => c.department },
         { header: 'E-mail 1 - Value', value: (c) => c.email },
-        { header: 'Phone 1 - Value', value: (c) => c.phone },
+        ...Array.from({ length: maxPhones(contacts) }, (_, i): CsvColumn[] => [
+          { header: `Phone ${i + 1} - Type`, value: (c) => phonesOf(c)[i]?.label ?? '' },
+          { header: `Phone ${i + 1} - Value`, value: (c) => txt(phonesOf(c)[i]) },
+        ]).flat(),
         ...Array.from({ length: max }, (_, i): CsvColumn[] => {
           const n = i + 1
           const a = (c: Contact) => c.addresses[i] ?? blank
@@ -111,8 +127,14 @@ export const CSV_PRESETS: CsvPreset[] = [
         { header: 'Last Name', value: (c) => c.last_name },
         { header: 'Company', value: (c) => c.company },
         { header: 'Job Title', value: (c) => c.title },
+        { header: 'Department', value: (c) => c.department },
         { header: 'E-mail Address', value: (c) => c.email },
-        { header: 'Mobile Phone', value: (c) => c.phone },
+        { header: 'Mobile Phone', value: (c) => txt(phonesLabeled(c, 'Mobile', 'Cell')[0]) },
+        { header: 'Business Phone', value: (c) => txt(phonesLabeled(c, 'Work', 'Office', 'Direct', 'Main')[0]) },
+        { header: 'Business Phone 2', value: (c) => txt(phonesLabeled(c, 'Work', 'Office', 'Direct', 'Main')[1]) },
+        { header: 'Business Fax', value: (c) => txt(phonesLabeled(c, 'Fax')[0]) },
+        { header: 'Home Phone', value: (c) => txt(phonesLabeled(c, 'Home')[0]) },
+        { header: 'Other Phone', value: (c) => txt(otherPhone(c)) },
         { header: 'Business Street', value: (c) => streetLine(work(c)) },
         { header: 'Business City', value: (c) => work(c).city },
         { header: 'Business State', value: (c) => work(c).region },

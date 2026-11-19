@@ -5,6 +5,9 @@ import {
   DATE_FIELDS,
   isBlankAddress,
   MAX_LENGTH,
+  MAX_PHONES,
+  PHONE_FIELDS,
+  PHONE_MAX,
   TEXT_FIELDS,
   type ContactDraft,
   type CustomFieldDef,
@@ -12,8 +15,8 @@ import {
   type TextField,
 } from './types'
 
-/** Error keys: a field name, "addr:<id>:<field>", "custom:<id>", or "form". */
-export type FieldErrors = Partial<Record<TextField | DateField | 'form' | `addr:${string}` | `custom:${string}`, string>>
+/** Error keys: a field name, "addr:<id>:<field>", "phone:<id>:<field>", "custom:<id>", or "form". */
+export type FieldErrors = Partial<Record<TextField | DateField | 'form' | `addr:${string}` | `phone:${string}` | `custom:${string}`, string>>
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const PHONE_RE = /^[0-9+().\-\sx#*]+$/i
@@ -49,6 +52,15 @@ export function normalize(draft: ContactDraft): ContactDraft {
       return n
     })
     .filter((a) => !isBlankAddress(a))
+  out.phones = (draft.phones ?? [])
+    .map((p) => {
+      const n = { ...p }
+      for (const f of PHONE_FIELDS) n[f] = clean(p[f])
+      n.ext = n.ext.replace(/^(x|ext\.?|extension)\s*/i, '')
+      n.label = n.label || 'Other'
+      return n
+    })
+    .filter((p) => p.number || p.ext)
   out.custom = Object.fromEntries(
     Object.entries(draft.custom ?? {})
       .map(([k, v]) => [k, clean(v)] as const)
@@ -72,6 +84,15 @@ export function validate(draft: ContactDraft, defs: CustomFieldDef[] = []): Fiel
     }
   }
   if (draft.addresses.length > 10) errors.form = 'Up to 10 addresses per contact.'
+  for (const p of draft.phones) {
+    for (const f of PHONE_FIELDS) {
+      if (p[f].length > PHONE_MAX[f]) errors[`phone:${p.id}:${f}`] = `Keep this under ${PHONE_MAX[f]} characters.`
+    }
+    if (p.number && !PHONE_RE.test(p.number)) errors[`phone:${p.id}:number`] = 'Use digits and + ( ) - only.'
+    else if (!p.number && p.ext) errors[`phone:${p.id}:number`] = 'Add the number for this extension.'
+    if (p.ext && !/^\d{1,10}$/.test(p.ext)) errors[`phone:${p.id}:ext`] = 'Digits only.'
+  }
+  if (draft.phones.length > MAX_PHONES) errors.form = `Up to ${MAX_PHONES} phone numbers per contact.`
   for (const def of defs) {
     const v = draft.custom[def.id]
     if (!v) continue
@@ -83,7 +104,6 @@ export function validate(draft: ContactDraft, defs: CustomFieldDef[] = []): Fiel
     errors.form = 'Add at least a first name, last name, or company.'
   }
   if (draft.email && !EMAIL_RE.test(draft.email)) errors.email = 'That email address doesn’t look right.'
-  if (draft.phone && !PHONE_RE.test(draft.phone)) errors.phone = 'Use digits and + ( ) - only.'
   if (draft.dl_number && !/^[A-Z0-9-]+$/.test(draft.dl_number)) errors.dl_number = 'Letters, digits and dashes only.'
   if (draft.source === 'license' && !draft.consent_at) {
     errors.form = 'License scans need recorded consent.'

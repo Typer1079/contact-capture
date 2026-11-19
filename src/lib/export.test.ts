@@ -12,7 +12,7 @@ const contact: Contact = {
   last_name: 'O"Brien',
   company: 'Acme, Inc.',
   email: 'jose@example.com',
-  phone: '+1 281 555 0100',
+  phones: [{ id: 'p1', label: 'Mobile', number: '+1 281 555 0100', ext: '' }],
   notes: '=HYPERLINK("http://evil")',
 }
 
@@ -47,7 +47,7 @@ describe('vcard', () => {
     const v = toVCard(contact)
     expect(v).toContain('N:O"Brien;José;;;')
     expect(v).toContain('ORG:Acme\\, Inc.')
-    expect(v).toContain('TEL;TYPE=CELL:+1 281 555 0100')
+    expect(v).toContain('TEL;TYPE=CELL,PREF:+1 281 555 0100')
     expect(v.startsWith('BEGIN:VCARD\r\nVERSION:3.0')).toBe(true)
   })
 })
@@ -104,4 +104,29 @@ describe('addresses, sensitive fields and custom fields in exports', () => {
     expect(v).not.toContain('12345678')
     expect(v).not.toContain('1990')
   })
+
+  it('exports several labeled phones with extensions', () => {
+    const multi: Contact = {
+      ...contact,
+      department: 'Special Investigations Unit',
+      phones: [
+        { id: 'a', label: 'Direct', number: '(281) 877-3868', ext: '' },
+        { id: 'b', label: 'Toll-free', number: '(800) 392-7805', ext: '73808' },
+        { id: 'c', label: 'Fax', number: '(281) 555-0199', ext: '' },
+      ],
+    }
+    const v = toVCard(multi)
+    expect(v).toContain('TEL;TYPE=WORK,VOICE,PREF:(281) 877-3868')
+    expect(v).toContain('item1.TEL:(800) 392-7805,73808')
+    expect(v).toContain('item1.X-ABLabel:Toll-free')
+    expect(v).toContain('TEL;TYPE=WORK,FAX:(281) 555-0199')
+    expect(v).toContain('ORG:Acme\\, Inc.;Special Investigations Unit')
+    const all = toCsv([multi], CSV_PRESETS[0])
+    expect(all).toContain('Phone 2 Label,Phone 2,Phone 2 Ext')
+    expect(all).toContain('Toll-free,(800) 392-7805,73808')
+    const outlook = toCsv([multi], CSV_PRESETS[2])
+    expect(outlook).toContain('(281) 877-3868')
+    expect(outlook).toContain('(800) 392-7805 x73808')
+  })
 })
+

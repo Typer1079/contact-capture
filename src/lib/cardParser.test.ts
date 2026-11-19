@@ -24,8 +24,12 @@ describe('parseBusinessCard', () => {
       postal_code: '77479',
       country: 'USA',
     })
-    expect(r.notes).toContain('Office: (713) 555-0100 x22')
-    expect(r.notes).toContain('Fax: (713) 555-0101')
+    expect(r.phones).toEqual([
+      { label: 'Mobile', number: '(281) 555-0142', ext: '' },
+      { label: 'Work', number: '(713) 555-0100', ext: '22' },
+      { label: 'Fax', number: '(713) 555-0101', ext: '' },
+    ])
+    expect(r.notes).not.toContain('555-01')
     expect(r.notes).toContain('Website: www.acmeroofing.com')
   })
 
@@ -52,7 +56,7 @@ describe('parseBusinessCard', () => {
   it('repairs common OCR slips', () => {
     const r = parseBusinessCard(L(['Pat Kim', 30], 'Owner', 'M: 281-555-0001', '0: 713-555-0002', 'www.kimco .com', 'pat@kimco.com'))
     expect(r.phone).toBe('(281) 555-0001')
-    expect(r.notes).toContain('Office: (713) 555-0002')
+    expect(r.phones[1]).toEqual({ label: 'Work', number: '(713) 555-0002', ext: '' })
     expect(r.notes).toContain('Website: www.kimco.com')
   })
 
@@ -157,9 +161,9 @@ describe('parseBusinessCard', () => {
       company: 'Unified Investigations & Sciences, Inc.', email: 'aleake@uis-usa.com', phone: '(210) 659-8677',
       street: '223 E. Greenbriar Lane', city: 'Dallas', region: 'TX', postal_code: '75203',
     })
-    expect(r.notes).toContain('Office: (214) 946-8989')
-    expect(r.notes).toContain('Toll-free: (800) 615-4840')
-    expect(r.notes).toContain('Fax: (214) 946-8586')
+    expect(r.phones.map((p) => `${p.label} ${p.number}`)).toEqual([
+      'Direct (210) 659-8677', 'Work (214) 946-8989', 'Toll-free (800) 615-4840', 'Fax (214) 946-8586',
+    ])
     expect(r.notes).toContain('Credentials: IAAI-CFI')
     expect(r.notes).not.toMatch(/Mobile|923 E|JAAI/)
   })
@@ -168,6 +172,29 @@ describe('parseBusinessCard', () => {
     const r = parseBusinessCard(L(['Lee Park', 40], 'Texas Instruments', '12500 TI Blvd, Dallas, TX 75243', 'lee@ti.com'))
     expect(r).toMatchObject({ city: 'Dallas', region: 'TX' })
     expect(JSON.stringify(r)).toContain('Texas Instruments')
+  })
+
+  it('keeps a department out of the name and credentials out of the title', () => {
+    const r = parseBusinessCard(L(['THE HARTFORD', 60], ['Rick Luna', 34], ['Investigator, MBA, CIF, FCLS', 26], ['Special Investigations Unit', 26],
+      '785 Greens Parkway, Suite 210', 'Houston, TX 77067', 'Cell 281-877-3868', '1-800-392-7805 x73808'))
+    expect(r).toMatchObject({
+      first_name: 'Rick', last_name: 'Luna', title: 'Investigator', department: 'Special Investigations Unit',
+      street: '785 Greens Parkway', suite: 'Suite 210', city: 'Houston', region: 'TX', postal_code: '77067',
+    })
+    expect(r.phones).toEqual([
+      { label: 'Mobile', number: '(281) 877-3868', ext: '' },
+      { label: 'Toll-free', number: '(800) 392-7805', ext: '73808' },
+    ])
+    expect(r.notes).toContain('Credentials: MBA, CIF, FCLS')
+    expect(r.notes).not.toContain('Rick Luna')
+  })
+
+  it('reads extensions written several ways', () => {
+    const r = parseBusinessCard(L(['Pat Kim', 30], 'Office 713-555-0100 Ext: 204', 'Direct 713-555-0111, ext. #9', 'pat@kimco.com'))
+    expect(r.phones).toEqual([
+      { label: 'Direct', number: '(713) 555-0111', ext: '9' },
+      { label: 'Work', number: '(713) 555-0100', ext: '204' },
+    ])
   })
 })
 

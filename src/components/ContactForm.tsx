@@ -4,9 +4,15 @@ import {
   ADDRESS_MAX,
   CUSTOM_VALUE_MAX,
   emptyAddress,
+  emptyPhone,
   MAX_LENGTH,
+  MAX_PHONES,
+  PHONE_MAX,
   STANDARD_ADDRESS_LABELS,
+  STANDARD_PHONE_LABELS,
   type Address,
+  type Phone,
+  type PhoneField,
   type AddressField,
   type ContactDraft,
   type CustomFieldDef,
@@ -44,8 +50,8 @@ const BASIC: FieldDef[] = [
   { key: 'last_name', label: 'Last name', half: true },
   { key: 'company', label: 'Company' },
   { key: 'title', label: 'Title' },
+  { key: 'department', label: 'Department' },
   { key: 'email', label: 'Email', type: 'email', inputMode: 'email' },
-  { key: 'phone', label: 'Phone', type: 'tel', inputMode: 'tel' },
 ]
 
 const EMPLOYMENT: FieldDef[] = [
@@ -84,8 +90,14 @@ function Section({ title, children, note }: { title: string; children: ReactNode
 
 export default function ContactForm({ initial, autoFilled = [], uncertain = [], isEdit, defs, onDefsChange, onSave, onCancel }: Props) {
   const [draft, setDraft] = useState<ContactDraft>(() =>
-    // New typed contacts start with an empty Work address ready to fill in.
-    !isEdit && initial.addresses.length === 0 && initial.source === 'manual' ? { ...initial, addresses: [emptyAddress('Work')] } : initial,
+    // New typed contacts start with an empty mobile number and Work address ready to fill in.
+    !isEdit && initial.source === 'manual'
+      ? {
+          ...initial,
+          phones: initial.phones.length ? initial.phones : [emptyPhone('Mobile')],
+          addresses: initial.addresses.length ? initial.addresses : [emptyAddress('Work')],
+        }
+      : initial,
   )
   const [errors, setErrors] = useState<FieldErrors>({})
   const [saving, setSaving] = useState(false)
@@ -99,6 +111,15 @@ export default function ContactForm({ initial, autoFilled = [], uncertain = [], 
     setDraft((d) => ({ ...d, addresses: d.addresses.map((a) => (a.id === id ? { ...a, [key]: value } : a)) }))
   const addAddr = (label: string) => setDraft((d) => ({ ...d, addresses: [...d.addresses, emptyAddress(label)] }))
   const removeAddr = (id: string) => setDraft((d) => ({ ...d, addresses: d.addresses.filter((a) => a.id !== id) }))
+  const setPhone = (id: string, key: PhoneField, value: string) =>
+    setDraft((d) => ({ ...d, phones: d.phones.map((p) => (p.id === id ? { ...p, [key]: value } : p)) }))
+  const addPhone = () =>
+    setDraft((d) => {
+      const used = d.phones.map((p) => p.label.trim().toLowerCase())
+      const label = ['Mobile', 'Work', 'Direct', 'Fax'].find((l) => !used.includes(l.toLowerCase())) ?? 'Other'
+      return { ...d, phones: [...d.phones, emptyPhone(label)] }
+    })
+  const removePhone = (id: string) => setDraft((d) => ({ ...d, phones: d.phones.filter((p) => p.id !== id) }))
   const setCustom = (id: string, value: string) => setDraft((d) => ({ ...d, custom: { ...d.custom, [id]: value } }))
 
   const labelsInUse = draft.addresses.map((a) => a.label.trim().toLowerCase())
@@ -250,6 +271,40 @@ export default function ContactForm({ initial, autoFilled = [], uncertain = [], 
     )
   }
 
+  function renderPhone(p: Phone, i: number) {
+    const highlighted = autoFilled.includes(`phone:${p.id}`)
+    const field = (key: PhoneField) => ({
+      id: `phone-${p.id}-${key}`,
+      err: errors[`phone:${p.id}:${key}`],
+      unsure: isUncertain(`phone:${p.id}:${key}`),
+    })
+    const label = field('label')
+    const num = field('number')
+    const ext = field('ext')
+    return (
+      <div key={p.id} className={`col-span-2 rounded-xl border p-3 ${highlighted ? 'border-amber-300 bg-amber-50/50' : 'border-slate-200 bg-white'}`}>
+        <div className="mb-2 flex items-end gap-2">
+          <div className="min-w-0 flex-1">
+            <label className="label" htmlFor={label.id}>Label{i === 0 && <span className="ml-1 font-normal normal-case tracking-normal text-slate-400">(main number)</span>}</label>
+            <input id={label.id} className="input py-2 font-semibold" list="phone-labels" maxLength={PHONE_MAX.label} value={p.label} placeholder="Mobile, Work, Direct…" onChange={(e) => setPhone(p.id, 'label', e.target.value)} />
+          </div>
+          <button type="button" className="btn-secondary px-3 py-2 text-xs" onClick={() => removePhone(p.id)} aria-label={`Remove ${p.label || 'this'} number`}>Remove</button>
+        </div>
+        <div className="flex gap-2">
+          <div className="min-w-0 flex-1" onFocus={() => num.unsure && touch(`phone:${p.id}:number`)}>
+            <label className="label" htmlFor={num.id}>Number{num.unsure && checkTag}</label>
+            <input id={num.id} className={inputClass(false, num.err, num.unsure)} type="tel" inputMode="tel" autoComplete="off" maxLength={PHONE_MAX.number} value={p.number} onChange={(e) => setPhone(p.id, 'number', e.target.value)} aria-invalid={Boolean(num.err)} />
+          </div>
+          <div className="w-24 shrink-0" onFocus={() => ext.unsure && touch(`phone:${p.id}:ext`)}>
+            <label className="label" htmlFor={ext.id}>Ext.</label>
+            <input id={ext.id} className={inputClass(false, ext.err, ext.unsure)} inputMode="numeric" autoComplete="off" maxLength={PHONE_MAX.ext} value={p.ext} onChange={(e) => setPhone(p.id, 'ext', e.target.value)} aria-invalid={Boolean(ext.err)} />
+          </div>
+        </div>
+        {(num.err || ext.err || label.err) && <p className="mt-1 text-xs text-red-600">{num.err || ext.err || label.err}</p>}
+      </div>
+    )
+  }
+
   function renderCustom(def: CustomFieldDef) {
     const err = errors[`custom:${def.id}`]
     if (renaming?.id === def.id) {
@@ -295,6 +350,9 @@ export default function ContactForm({ initial, autoFilled = [], uncertain = [], 
       <datalist id="address-labels">
         {labelSuggestions.map((l) => <option key={l} value={l} />)}
       </datalist>
+      <datalist id="phone-labels">
+        {STANDARD_PHONE_LABELS.map((l) => <option key={l} value={l} />)}
+      </datalist>
       <datalist id="us-states">
         {US_STATES.map((s) => <option key={s} value={s} />)}
       </datalist>
@@ -307,7 +365,7 @@ export default function ContactForm({ initial, autoFilled = [], uncertain = [], 
               {uncertain.length} field{uncertain.length > 1 ? 's' : ''} marked “Check”: the readings didn’t agree or the value looks off.
             </strong>
           )}{' '}
-          Website, other phone numbers and extra text are in Notes.
+          Website and any extra text are in Notes.
         </div>
       )}
       {draft.source === 'license' && autoFilled.length > 0 && (
@@ -319,6 +377,13 @@ export default function ContactForm({ initial, autoFilled = [], uncertain = [], 
 
       <div className="grid grid-cols-2 gap-3">
         {BASIC.map(renderField)}
+
+        <Section title="Phones" note="The first number is the main one. Tap a label to change it.">
+          {draft.phones.map(renderPhone)}
+          {draft.phones.length < MAX_PHONES && (
+            <button type="button" className="btn-secondary col-span-2 py-2 text-xs" onClick={addPhone}>+ Add phone number</button>
+          )}
+        </Section>
 
         <Section title="Addresses" note="Home and Work are standard. Tap a label to rename it.">
           {draft.addresses.map(renderAddress)}

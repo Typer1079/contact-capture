@@ -26,6 +26,20 @@ export const ADDRESS_MAX: Record<AddressField, number> = {
   country: 100,
 }
 
+/** One labeled phone number, with an optional extension. */
+export interface Phone {
+  id: string
+  label: string
+  number: string
+  ext: string
+}
+
+export const STANDARD_PHONE_LABELS = ['Mobile', 'Work', 'Direct', 'Home', 'Fax', 'Toll-free', 'Main', 'Other'] as const
+export const PHONE_FIELDS = ['label', 'number', 'ext'] as const
+export type PhoneField = (typeof PHONE_FIELDS)[number]
+export const PHONE_MAX: Record<PhoneField, number> = { label: 40, number: 40, ext: 10 }
+export const MAX_PHONES = 10
+
 /** A field the user added in the app (shows on every contact). */
 export interface CustomFieldDef {
   id: string
@@ -39,8 +53,9 @@ export interface ContactDraft {
   last_name: string
   company: string
   title: string
+  department: string
   email: string
-  phone: string
+  phones: Phone[]
   addresses: Address[]
   hire_date: string // YYYY-MM-DD or ''
   home_state: string
@@ -69,8 +84,8 @@ export const TEXT_FIELDS = [
   'last_name',
   'company',
   'title',
+  'department',
   'email',
-  'phone',
   'home_state',
   'dl_number',
   'sex',
@@ -94,8 +109,8 @@ export const MAX_LENGTH: Record<TextField, number> = {
   last_name: 100,
   company: 200,
   title: 200,
+  department: 200,
   email: 254,
-  phone: 40,
   home_state: 30,
   dl_number: 30,
   sex: 20,
@@ -126,8 +141,9 @@ export function emptyDraft(source: ContactSource = 'manual'): ContactDraft {
     last_name: '',
     company: '',
     title: '',
+    department: '',
     email: '',
-    phone: '',
+    phones: [],
     addresses: [],
     hire_date: '',
     home_state: '',
@@ -158,4 +174,24 @@ export function streetLine(a: Pick<Address, 'street' | 'suite'>): string {
 /** Finds the address with this label (case-insensitive). */
 export function addressByLabel(c: Pick<ContactDraft, 'addresses'>, label: string): Address | undefined {
   return c.addresses.find((a) => a.label.trim().toLowerCase() === label.toLowerCase())
+}
+
+export function emptyPhone(label = 'Work'): Phone {
+  return { id: newId(), label, number: '', ext: '' }
+}
+
+/** "(281) 555-0100 x204" */
+export function phoneText(p: Pick<Phone, 'number' | 'ext'>): string {
+  return p.ext ? `${p.number} x${p.ext}` : p.number
+}
+
+/** The phone shown first (the main one). */
+export function primaryPhone(c: Pick<ContactDraft, 'phones'>): Phone | undefined {
+  return c.phones.find((p) => p.number)
+}
+
+/** Phones whose label is one of these (case-insensitive), in order. */
+export function phonesLabeled(c: Pick<ContactDraft, 'phones'>, ...labels: string[]): Phone[] {
+  const want = labels.map((l) => l.toLowerCase())
+  return c.phones.filter((p) => p.number && want.includes(p.label.trim().toLowerCase()))
 }

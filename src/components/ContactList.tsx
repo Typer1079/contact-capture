@@ -30,7 +30,7 @@ export default function ContactList({ contacts, defs, loading, onEdit, onDelete 
     const q = query.trim().toLowerCase()
     if (!q) return contacts
     return contacts.filter((c) =>
-      [c.first_name, c.last_name, c.company, c.email, c.phone, c.title, ...c.addresses.flatMap((a) => [a.city, a.street, a.label]), ...Object.values(c.custom)]
+      [c.first_name, c.last_name, c.company, c.email, ...c.phones.map((p) => p.number), c.title, c.department, ...c.addresses.flatMap((a) => [a.city, a.street, a.label]), ...Object.values(c.custom)]
         .some((v) => (v ?? '').toLowerCase().includes(q)),
     )
   }, [contacts, query])
@@ -116,7 +116,7 @@ export default function ContactList({ contacts, defs, loading, onEdit, onDelete 
             <button className="min-w-0 flex-1 text-left" onClick={() => onEdit(c)}>
               <div className="truncate font-semibold">{displayName(c)}</div>
               <div className="truncate text-sm text-slate-500">
-                {[c.title, c.company].filter(Boolean).join(' · ') || c.email || c.phone || [c.addresses[0]?.city, c.addresses[0]?.region].filter(Boolean).join(', ')}
+                {[c.title, c.company].filter(Boolean).join(' · ') || c.email || c.phones[0]?.number || [c.addresses[0]?.city, c.addresses[0]?.region].filter(Boolean).join(', ')}
               </div>
               <span className="mt-1 inline-block rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">{SOURCE_LABEL[c.source]}</span>
             </button>

@@ -1,7 +1,7 @@
 import { supabase } from './supabase'
-import { DATE_FIELDS, TEXT_FIELDS, type Contact, type ContactDraft, type CustomFieldDef } from './types'
+import { DATE_FIELDS, newId, phoneText, primaryPhone, TEXT_FIELDS, type Contact, type ContactDraft, type CustomFieldDef, type Phone } from './types'
 
-const COLUMNS = ['id', ...TEXT_FIELDS, ...DATE_FIELDS, 'addresses', 'custom', 'source', 'consent_at', 'created_at', 'updated_at'].join(',')
+const COLUMNS = ['id', ...TEXT_FIELDS, ...DATE_FIELDS, 'phone', 'phones', 'addresses', 'custom', 'source', 'consent_at', 'created_at', 'updated_at'].join(',')
 
 function toRow(d: ContactDraft) {
   // Only send known columns; owner_id is set by the database from the signed-in user.
@@ -9,6 +9,12 @@ function toRow(d: ContactDraft) {
     source: d.source,
     consent_at: d.consent_at,
     addresses: d.addresses,
+    phones: d.phones,
+    // The old single "phone" column keeps the main number, for anything still reading it.
+    phone: (() => {
+      const p = primaryPhone(d)
+      return p ? phoneText(p).slice(0, 40) : ''
+    })(),
     custom: d.custom,
   }
   for (const f of TEXT_FIELDS) row[f] = d[f]
@@ -18,9 +24,14 @@ function toRow(d: ContactDraft) {
 
 /** Database rows -> app shape (dates as '' when empty, JSON columns always present). */
 function fromRow(r: Record<string, unknown>): Contact {
-  const c = r as unknown as Contact
+  const { phone, ...c } = r as unknown as Contact & { phone?: string }
+  let phones: Phone[] = Array.isArray(r.phones) ? (r.phones as Phone[]) : []
+  // Saved before the phone list existed (and before the database update ran).
+  if (!phones.length && phone) phones = [{ id: newId(), label: r.source === 'card' ? 'Work' : 'Mobile', number: phone, ext: '' }]
   return {
     ...c,
+    department: (r.department as string | null) ?? '',
+    phones,
     hire_date: (r.hire_date as string | null) ?? '',
     dob: (r.dob as string | null) ?? '',
     addresses: Array.isArray(r.addresses) ? (r.addresses as Contact['addresses']) : [],
