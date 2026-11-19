@@ -6,6 +6,7 @@ import ContactList from './components/ContactList'
 import ErrorBoundary from './components/ErrorBoundary'
 import { PasskeyOffer, PasskeySettings } from './components/Passkeys'
 import { loadFresh, takeResumeScreen } from './lib/freshLoad'
+import { stopParkedCamera } from './lib/cameraKeeper'
 import type { LicenseContact } from './lib/aamva'
 import { splitSuite, type CardContact } from './lib/cardParser'
 import type { IdConsent } from './components/CardScanner'
@@ -190,7 +191,7 @@ export default function App() {
           <button className="w-14 text-left text-sm font-medium text-slate-600" onClick={() => setView({ name: 'home' })}>‹ Home</button>
         )}
         <h1 className="text-base font-semibold">{title}</h1>
-        <button className="w-14 text-right text-sm text-slate-500" onClick={() => { setView({ name: 'home' }); void supabase.auth.signOut() }}>Sign out</button>
+        <button className="w-14 text-right text-sm text-slate-500" onClick={() => { setView({ name: 'home' }); stopParkedCamera(); void supabase.auth.signOut() }}>Sign out</button>
       </header>
 
       <main className="flex-1 px-4 py-4">
