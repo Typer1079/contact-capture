@@ -118,6 +118,8 @@ export interface ReadLine extends CardLine {
   words?: { text: string; confidence: number }[]
   /** Where the line sits, as fractions (0–1) of the image width/height. */
   box?: Box
+  /** Read from the negative (light text on a dark band); used when re-reading this line. */
+  polarity?: 1 | -1
   /** The other pass read this line differently; kept so the dispute can be settled. */
   alt?: ReadLine
 }
@@ -169,6 +171,80 @@ const squash = (t: string) => t.toLowerCase().replace(/[^a-z0-9]/g, '')
  * Combines lines from several readings of the same card. When two readings saw the same
  * line, keeps the more complete / more confident one. Result is sorted top to bottom.
  */
+/**
+ * Adds the negative read's lines place by place: where the normal reads found nothing, its line
+ * is added; where they found something in the same spot, the more confident reading wins.
+ */
+/** Characters in tokens that look like real card text: words, numbers, phone parts, emails. */
+export function sensibleChars(text: string): number {
+  let n = 0
+  for (const raw of text.split(/\s+/)) {
+    const t = raw.replace(/[,.;:)]+$/, '').replace(/^[(]/, '')
+    if (
+      /^[A-Z]?[a-z]{2,}(-[A-Z]?[a-z]+)*$/.test(t) || // Houston, Greenhouse, vice, Andrews-Harper
+      /^[A-Z]{2,}$/.test(t) && t.length <= 5 || // TX, CEO (short caps only)
+      /^\d{3,5}(-\d{4})?$/.test(t) || // 4949, 77084, 77084-1234
+      /^\d{3}[/.\-]\d{3}[.\-]\d{4}$/.test(t) || // 281/856-7688
+      /^[\w.+-]+@[\w-]+\.[\w.]+$/.test(t)
+    )
+      n += t.length
+  }
+  return n
+}
+
+/** Two readings of the same text: most of the shorter one's characters line up with the longer. */
+function similar(a: string, b: string): boolean {
+  const p = squash(a)
+  const q = squash(b)
+  const [short, long] = p.length < q.length ? [p, q] : [q, p]
+  // A small fragment inside a longer line ("5-5125" in a whole phone line) isn't the same text.
+  if (short.length < 4 || short.length < long.length * 0.4) return false
+  if (long.includes(short)) return true
+  // Best-matching stretch of the longer text, compared with the shorter one.
+  let best = 99
+  for (let i = 0; i + short.length <= long.length; i += 1) best = Math.min(best, editDistance(short, long.slice(i, i + short.length)))
+  return best <= short.length * 0.25
+}
+
+/** Real-looking characters in `text` whose tokens appear in none of `lines`. */
+function newChars(text: string, lines: ReadLine[]): number {
+  const known = new Set(lines.flatMap((l) => l.text.toLowerCase().split(/\s+/).map((t) => t.replace(/[^a-z0-9@./-]/g, ''))))
+  return text
+    .split(/\s+/)
+    .filter((t) => !known.has(t.toLowerCase().replace(/[^a-z0-9@./-]/g, '')))
+    .reduce((n, t) => n + sensibleChars(t), 0)
+}
+
+export function mergeByPlace(lines: ReadLine[], extra: ReadLine[]) {
+  // Same spot: the line's middle sits within the other's height, and they overlap sideways.
+  const overlaps = (a: Box, b: Box) => {
+    const mid = (a.y0 + a.y1) / 2
+    return mid > b.y0 && mid < b.y1 && Math.min(a.x1, b.x1) > Math.max(a.x0, b.x0)
+  }
+  for (const e of extra) {
+    if (!e.box || squash(e.text).length < 2) continue
+    const here = lines.filter((l) => l.box && overlaps(l.box, e.box!))
+    if (!here.length) {
+      // Only fairly confident text where nothing was found (not specks of the background).
+      if (e.confidence >= 70 && sensibleChars(e.text) >= 4) lines.push(e)
+      continue
+    }
+    // Just another reading of text already found ("Senior Investigaio", "946-8536"): skip.
+    if (here.some((l) => similar(l.text, e.text))) continue
+    // Confidence alone can't tell junk from text ("83" can score 96%). Take the negative's
+    // line when it adds real-looking text (words, numbers, phones, emails) that no other line
+    // has, and holds about as much of it as what's in this spot now.
+    const mine = sensibleChars(e.text)
+    const theirs = here.reduce((n, l) => n + sensibleChars(l.text), 0)
+    if (e.confidence >= 50 && newChars(e.text, lines) >= 8 && mine >= theirs * 0.8) {
+      // Drop the junk it replaces; keep anything meaningful that happens to overlap.
+      for (const l of here) if (sensibleChars(l.text) < 10) lines.splice(lines.indexOf(l), 1)
+      lines.push(e)
+    }
+  }
+  lines.sort((a, b) => (a.y ?? 0) - (b.y ?? 0))
+}
+
 export function mergeLines(passes: ReadLine[][]): ReadLine[] {
   const out: ReadLine[] = []
   for (const line of passes.flat()) {
@@ -186,7 +262,10 @@ export function mergeLines(passes: ReadLine[][]): ReadLine[] {
     if (same < 0) out.push(line)
     else {
       const o = out[same]
-      const better = squash(line.text).length > squash(o.text).length + 2 ? line : line.confidence > o.confidence ? line : o
+      const a = squash(line.text)
+      const b = squash(o.text)
+      // A fragment never replaces the whole line it's part of ("Debbi" vs "Debbie Andrews-Harper").
+      const better = a.length > b.length + 2 || (a.length > b.length && a.includes(b)) ? line : b.length > a.length + 2 || b.includes(a) ? o : line.confidence > o.confidence ? line : o
       const other = better === line ? o : line
       // Same length but different characters: a real disagreement worth a closer look.
       out[same] = squash(other.text) !== squash(better.text) && Math.abs(squash(other.text).length - squash(better.text).length) <= 2
@@ -201,6 +280,43 @@ export function mergeLines(passes: ReadLine[][]): ReadLine[] {
  * When the two passes read a line differently ("223 E." vs "923 E.", "4840" vs "4340"), read just
  * that line once more from a full-resolution crop and keep the version the third read agrees with.
  */
+const VALID_PHONE = /\(?\b\d{3}\)?[\s.\-–/]*\d{3}[\s.\-–]*\d{4}\b/g
+const phoneCount = (t: string) => (t.match(VALID_PHONE) ?? []).length
+/** Something shaped like a phone number that isn't a valid one ("832/14 5-5125"). */
+const brokenPhone = (t: string) => /\b\d{3}\s*[/.\-)]\s*[\d\s]{2,5}[\s.\-–]\s*\d{3,4}\b/.test(t.replace(VALID_PHONE, ' '))
+
+/** Crop around one line, at full resolution, and read just that line. */
+async function rereadLine(worker: Worker, photo: ImageBitmap | HTMLImageElement, turns: number, polarity: 1 | -1, b: Box, stretch: number) {
+  const padY = (b.y1 - b.y0) * 0.35
+  const padX = (b.y1 - b.y0) * 0.8
+  const band = (b.y1 - b.y0) * 2.5
+  const crop = { x0: Math.max(0, b.x0 - padX - band), y0: Math.max(0, b.y0 - band), x1: Math.min(1, b.x1 + padX + band), y1: Math.min(1, b.y1 + band) }
+  const canvas = preprocess(photo, turns, 2600, stretch, polarity, crop)
+  const cw = crop.x1 - crop.x0
+  const ch = crop.y1 - crop.y0
+  const left = Math.max(0, Math.floor(((b.x0 - padX - crop.x0) / cw) * canvas.width))
+  const top = Math.max(0, Math.floor(((b.y0 - padY - crop.y0) / ch) * canvas.height))
+  const width = Math.min(canvas.width - left, Math.ceil(((b.x1 - b.x0 + 2 * padX) / cw) * canvas.width))
+  const height = Math.min(canvas.height - top, Math.ceil(((b.y1 - b.y0 + 2 * padY) / ch) * canvas.height))
+  if (width < 8 || height < 8) return ''
+  const { data } = await worker.recognize(canvas, { rectangle: { left, top, width, height } })
+  return ((data as { text?: string }).text ?? '').trim()
+}
+
+/** Lines with a misread phone number ("Cell: 832/14 5-5125"): read again up close, keep the better one. */
+async function repairPhones(worker: Worker, photo: ImageBitmap | HTMLImageElement, turns: number, polarity: 1 | -1, lines: ReadLine[]) {
+  const broken = lines.filter((l) => l.box && brokenPhone(l.text)).slice(0, 4)
+  for (const l of broken) {
+    for (const stretch of [1.3, 1]) {
+      // The crop may hold a neighboring line too: keep the line with the most valid numbers.
+      const text = await rereadLine(worker, photo, turns, l.polarity ?? polarity, l.box!, stretch)
+      const bestLine = text.split('\n').map((t) => t.trim().replace(/\s+/g, ' ')).sort((a, b) => phoneCount(b) - phoneCount(a))[0] ?? ''
+      if (phoneCount(bestLine) > phoneCount(l.text)) l.text = bestLine
+      if (!brokenPhone(l.text)) break
+    }
+  }
+}
+
 async function settleDisputes(worker: Worker, photo: ImageBitmap | HTMLImageElement, turns: number, polarity: 1 | -1, lines: ReadLine[]) {
   const disputed = lines.filter((l) => l.alt && l.box).slice(0, 8)
   if (!disputed.length) return
@@ -216,7 +332,7 @@ async function settleDisputes(worker: Worker, photo: ImageBitmap | HTMLImageElem
         // A band around the line, tall enough for the glare removal to see the card around the text.
         const band = (b.y1 - b.y0) * 2.5
         const crop = { x0: Math.max(0, b.x0 - padX - band), y0: Math.max(0, b.y0 - band), x1: Math.min(1, b.x1 + padX + band), y1: Math.min(1, b.y1 + band) }
-        const canvas = preprocess(photo, turns, 2600, stretch, polarity, crop)
+        const canvas = preprocess(photo, turns, 2600, stretch, l.polarity ?? polarity, crop)
         const cw = crop.x1 - crop.x0
         const ch = crop.y1 - crop.y0
         const left = Math.max(0, Math.floor(((b.x0 - padX - crop.x0) / cw) * canvas.width))
@@ -249,6 +365,26 @@ function differingConfidence(a: ReadLine, b: ReadLine): number {
   const diff = (a.words ?? []).filter((w) => !other.has(w.text))
   return diff.length ? diff.reduce((n, w) => n + w.confidence, 0) / diff.length : a.confidence
 }
+
+/**
+ * True when a sizable part of the picture (but not all of it) is dark: a colored band that
+ * probably holds light text. Checked on a tiny copy, so it costs almost nothing.
+ */
+function hasDarkBand(photo: ImageBitmap | HTMLImageElement): boolean {
+  const c = document.createElement('canvas')
+  c.width = 48
+  c.height = 48
+  const ctx = c.getContext('2d', { willReadFrequently: true })!
+  ctx.drawImage(photo, 0, 0, 48, 48)
+  const d = ctx.getImageData(10, 10, 28, 28).data // middle of the picture (mostly the card)
+  let dark = 0
+  for (let i = 0; i < d.length; i += 4) if ((d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000 < DARK_BACKGROUND) dark++
+  const share = dark / (d.length / 4)
+  return share > 0.2 && share < 0.85
+}
+
+/** Background brightness (0–255) below which an area counts as dark. */
+const DARK_BACKGROUND = 110
 
 async function loadPhoto(file: Blob): Promise<ImageBitmap | HTMLImageElement> {
   try {
@@ -328,8 +464,18 @@ export async function readCard(
     if (!best) return { turns: 0, lines: [], clarity: 0, rawText: '' }
     if (opts.quick) return { turns: best.turns, lines: best.result.lines, clarity: best.result.clarity, rawText: best.result.rawText }
     const wide = await run(best.turns, 1200, 1.6, best.polarity)
-    const lines = mergeLines([best.result.lines, wide.lines])
+    const passes = [best.result.lines, wide.lines]
+    // Cards with both dark-on-light and light-on-dark parts (a white name panel and a blue
+    // contact band): also read the negative, which turns the band's light text dark.
+    if (hasDarkBand(photo)) {
+      const flip = best.polarity === 1 ? -1 : 1
+      const neg = await run(best.turns, 1600, 1, flip)
+      passes.push(neg.lines.map((l) => ({ ...l, polarity: flip })))
+    }
+    const lines = mergeLines(passes.slice(0, 2))
+    if (passes[2]) mergeByPlace(lines, passes[2])
     await settleDisputes(worker, photo, best.turns, best.polarity, lines)
+    await repairPhones(worker, photo, best.turns, best.polarity, lines)
     return {
       turns: best.turns,
       lines,

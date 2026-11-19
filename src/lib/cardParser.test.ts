@@ -196,5 +196,27 @@ describe('parseBusinessCard', () => {
       { label: 'Work', number: '(713) 555-0100', ext: '204' },
     ])
   })
+
+  it('reads a card with a white contact band (negative read merged) and a script logo word', () => {
+    const r = parseBusinessCard(L(['rer = AE Es', 20], ['Lem', 30], ['X Bad', 20], ['POOL SUPPLY"', 60], ['JAN', 20],
+      ['Debbie Andrews-Harper', 40], ['Executive Vice President', 30],
+      ['> 4949 Greenhouse Road = Houston; Texas 77084', 30], ['224949 Greenhouse Road « pe Texas 7708.', 30],
+      ['281/856-7688 + » Fax 281/856-7004 « Cell: 832/715-5125', 30], ['debbie@warehousepoolsupply.com:', 26]))
+    expect(r).toMatchObject({
+      first_name: 'Debbie', last_name: 'Andrews-Harper', title: 'Executive Vice President', company: 'Warehouse Pool Supply',
+      email: 'debbie@warehousepoolsupply.com', street: '4949 Greenhouse Road', city: 'Houston', region: 'TX', postal_code: '77084',
+    })
+    expect(r.phones).toEqual([
+      { label: 'Mobile', number: '(832) 715-5125', ext: '' },
+      { label: 'Work', number: '(281) 856-7688', ext: '' },
+      { label: 'Fax', number: '(281) 856-7004', ext: '' },
+    ])
+    expect(r.notes).toBe('')
+  })
+
+  it('cleans a stray mark inside a company name that spells the domain', () => {
+    const r = parseBusinessCard(L(['Daniel Quam', 40], ['GUARDIAN RFI)d', 30], 'daniel.quam@guardianrfid.com'))
+    expect(r.company).toBe('Guardian RFID')
+  })
 })
 

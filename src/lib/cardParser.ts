@@ -148,7 +148,7 @@ const PO_BOX = /^\s*p\.?\s*o\.?\s*box\s+\d+/i
 const EMAIL = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i
 const URL_RE = /\b((?:https?:\/\/)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|co|us|biz|info|edu|gov|ai|app|dev|me|tv|law|church|realtor|health)(?:\/[^\s]*)?)\b/i
 // US/Canada numbers, with optional +1, separators, and extension.
-const PHONE = /(?:\+?1[\s.-]*)?\(?\b(\d{3})\)?[\s.\-–]*(\d{3})[\s.\-–]*(\d{4})\b(?:\s*,?\s*(?:x|ext\.?|extension)\s*[:.#]?\s*(\d{1,6}))?/gi
+const PHONE = /(?:\+?1[\s.-]*)?\(?\b(\d{3})\)?[\s.\-–/]*(\d{3})[\s.\-–]*(\d{4})\b(?:\s*,?\s*(?:x|ext\.?|extension)\s*[:.#]?\s*(\d{1,6}))?/gi
 
 type PhoneKind = 'mobile' | 'direct' | 'office' | 'fax' | 'other' | 'toll-free'
 const TOLL_FREE = /^8(00|33|44|55|66|77|88)$/
@@ -180,8 +180,14 @@ function repairLine(t: string): string {
     .replace(/(www\.[\w-]+)\s+\.\s*(com|net|org|io|co|us|biz|edu|gov)\b/gi, '$1.$2')
     .replace(/\s{2,}/g, ' ')
     .replace(STATE_NAME_ZIP, (n) => STATE_NAMES[n.toLowerCase().replace(/\s+/g, ' ').replace(/\.$/, '')] ?? n)
-    // Square/round bullets between parts are often read as "m", "■" or "•": "Lane ■ Dallas".
-    .replace(/(\S)\s+[m■▪●•◆]\s+(?=[A-Z][a-z])/g, (all, ch: string) => (/\d/.test(t) ? `${ch} • ` : all))
+    // Bullets between parts are often read as other marks ("=", "«", "+", "*"), or as "m":
+    // "Road = Houston", "7688 + » Fax", "Lane m Dallas". Only on lines with digits (addresses,
+    // phones). A lone "m" counts only before a word, since "m 214-555-0100" can mean mobile.
+    .replace(/(\S)\s+[■▪●•◆=«»*+¢~](?:\s*[■▪●•◆=«»*+¢~])*\s+/g, (all, ch: string) => (/\d/.test(t) ? `${ch} • ` : all))
+    .replace(/(\S)\s+m\s+(?=[A-Z][a-z])/g, (all, ch: string) => (/\d/.test(t) ? `${ch} • ` : all))
+    // "Houston; Texas" -> "Houston, Texas"; a stray mark at the start of a line ("> 4949 …").
+    .replace(/([a-z]);\s/g, '$1, ')
+    .replace(/^[>»<«*•·~=+¢&]+\s*/, '')
     .trim()
 }
 
@@ -241,8 +247,8 @@ function splitName(full: string): { first: string; last: string } {
 const TLD = /^[a-z0-9.-]*\.(com|net|org|io|co|us|biz|info|edu|gov|ai|app|dev|me)$/i
 
 /** Glare or a line break can split "jane.doe@acme" / "roofing.com" across two lines; rejoin them. */
-function joinSplitEmails(lines: { text: string; height: number }[]) {
-  const out: { text: string; height: number }[] = []
+function joinSplitEmails(lines: { text: string; height: number; y: number }[]) {
+  const out: { text: string; height: number; y: number }[] = []
   for (let i = 0; i < lines.length; i++) {
     const cur = lines[i]
     const next = lines[i + 1]
@@ -257,7 +263,7 @@ function joinSplitEmails(lines: { text: string; height: number }[]) {
           break
         }
       }
-      out.push({ text: left + right.slice(overlap), height: cur.height })
+      out.push({ text: left + right.slice(overlap), height: cur.height, y: cur.y })
       i++
     } else out.push(cur)
   }
@@ -324,9 +330,10 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
     notes: '', is_id: false,
   }
 
+  const hasPositions = input.some((l) => l.y !== undefined)
   const lines = joinSplitEmails(
     input
-      .map((l) => ({ text: repairLine(l.text), height: l.height ?? 0 }))
+      .map((l, i) => ({ text: repairLine(l.text), height: l.height ?? 0, y: l.y ?? i }))
       // Drop OCR noise: lines with almost no letters/digits, or mostly symbols.
       .filter((l) => {
         const alnum = l.text.replace(/[^A-Za-z0-9]/g, '').length
@@ -627,7 +634,14 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
       used.add(companyIdx)
       // Logo-style names split over two lines ("Unified" / "Investigations & Sciences, Inc."):
       // join them when together their initials spell the domain ("uis-usa.com").
-      const a = companyIdx - 1
+      // The nearest unused line above it (by position, not list order).
+      let a = -1
+      lines.forEach((l, i) => {
+        if (used.has(i) || i === companyIdx || l.y >= lines[companyIdx].y) return
+        // With real positions, it must be close above (within about three line heights).
+        if (hasPositions && lines[companyIdx].y - l.y > lines[companyIdx].height * 3) return
+        if (a < 0 || l.y > lines[a].y) a = i
+      })
       if (dw && a >= 0 && !used.has(a) && !/\d/.test(lines[a].text) && lines[a].text.trim().split(/\s+/).length <= 3 &&
           !initialsMatchDomain(out.company, dw) && initialsMatchDomain(`${lines[a].text} ${out.company}`, dw)) {
         out.company = companyCase(`${lines[a].text.trim()} ${lines[companyIdx].text.trim()}`)
@@ -637,8 +651,26 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
       out.company = cap(dw)
     }
   }
-  // Mark lines that are exactly the company name as used.
-  if (out.company) lines.forEach((l, i) => squash(l.text) === squash(out.company) && used.add(i))
+  if (out.company) {
+    // Trademark marks are often misread as quotes: "POOL SUPPLY®" -> "Pool Supply'".
+    out.company = out.company.replace(/[\s®™©"'’`]+$/, '').replace(/\s*[®™©]\s*/g, ' ').trim()
+    // A stray mark inside a word ("RFI)d"): drop it, and match the word's capitals ("RFID").
+    out.company = out.company.replace(/([A-Za-z])[)(\][|}{!]([A-Za-z])/g, '$1$2').replace(/\b[A-Z]{2,}[a-z]\b/g, (w) => w.toUpperCase())
+    out.company = companyCase(out.company)
+    // A script or stylized word the reader missed ("Warehouse" above "POOL SUPPLY"):
+    // the domain spells it out (warehousepoolsupply.com -> "Warehouse Pool Supply").
+    const sq = squash(out.company)
+    const missing = dw.length - sq.length
+    if (sq.length >= 4 && dw.endsWith(sq) && missing >= 3 && missing <= 12) out.company = `${cap(dw.slice(0, missing))} ${out.company}`
+  }
+  // Mark lines that are the company name (or part of it) as used.
+  if (out.company) {
+    const cq = squash(out.company)
+    lines.forEach((l, i) => {
+      const lq = squash(l.text)
+      if (lq === cq || (lq.length >= 4 && cq.includes(lq))) used.add(i)
+    })
+  }
 
   // Street and suite go in separate fields.
   if (out.street) {
@@ -654,10 +686,18 @@ export function parseBusinessCard(input: CardLine[]): CardContact {
   // Also skip a line that's a near-copy of one already used (two OCR passes read it slightly differently).
   const sq = (t: string) => t.toLowerCase().replace(/[^a-z0-9]/g, '')
   const seen = lines.filter((_, i) => used.has(i)).map((l) => sq(l.text))
+  const usedWords = new Set(lines.filter((_, i) => used.has(i)).flatMap((l) => l.text.toLowerCase().match(/[a-z]{3,}|\d{3,}/g) ?? []))
+  // The address line had "Texas" shortened to "TX": count the full state name as used too.
+  for (const [name, code] of Object.entries(STATE_NAMES)) if (code === out.region) name.split(' ').forEach((w) => usedWords.add(w))
   const leftovers: string[] = []
   lines.forEach((l, i) => {
     const q = sq(l.text)
     if (used.has(i) || q.length < 4) return
+    // Logo and artwork scraps ("rer = AE Es", "X Bad"): no real word, number or email in them.
+    if (!/[A-Za-z]{4,}|\d{3,}|@/.test(l.text)) return
+    // Another reading of a line already used ("224949 Greenhouse Road « pe Texas 7708.").
+    const words = l.text.toLowerCase().match(/[a-z]{3,}|\d{3,}/g) ?? []
+    if (words.length >= 3 && words.filter((w) => usedWords.has(w)).length >= words.length * 0.6) return
     if (seen.some((p) => p.length >= 6 && editDistance(p, q) <= Math.max(1, Math.floor(Math.max(p.length, q.length) * 0.1)))) return
     seen.push(q)
     leftovers.push(l.text)
